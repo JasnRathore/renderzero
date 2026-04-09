@@ -1,5 +1,5 @@
 // ============================================================
-//  RENDER ZERO — 3D Model Viewer
+//  RENDER ZERO — 3D Scene Viewer & Renderer
 //  Go + raylib-go | Windows only
 //  UI: Void Precision — Zhenya Rynzhuk × Jony Ive
 // ============================================================
@@ -9,25 +9,22 @@
 //  Middle Mouse Drag        Orbit
 //  Shift + MMB Drag         Pan
 //  Scroll Wheel             Zoom
-//  O                        Open file dialog
-//  Drag & Drop              Load OBJ / FBX / GLTF
+//  O                        Open / add model to scene
+//  H                        Load HDRI environment
+//  Drag & Drop              Load OBJ/FBX/GLTF → adds to scene
+//                           Drop .hdr          → loads as HDRI
 //  Numpad 1/3/7             Front / Right / Top view
 //  Ctrl+Numpad 1/3/7        Back / Left / Bottom
 //  Numpad 0                 Perspective reset
 //  Numpad 5                 Toggle ortho / persp
-//  . (Period)               Focus on model
+//  . (Period)               Focus selected / all
 //  G / W / A                Grid / Wire overlays / Axes
 //  Z                        Cycle shading mode
+//  Delete                   Remove selected object/camera
+//  C                        Add render camera at current view
+//  R                        Render from active camera
 //  F11                      Fullscreen
-//
-//  ON-SCREEN NAV TOOLBAR  (floating, bottom of viewport)
-//  ───────────────────────────────────────────────────────
-//  Orbit   left-click drag = orbit camera
-//  Pan     left-click drag = pan camera
-//  +  −    zoom in / out
-//  Focus   frame the loaded model
-//  Ortho   toggle perspective ↔ orthographic
-//  Views   Front / Right / Top presets
+//  Escape                   Close render output / cancel nav
 // ============================================================
 
 package main
@@ -46,7 +43,8 @@ import (
 const (
 	topbarH     = int32(42)
 	bottombarH  = int32(26)
-	panelRW     = int32(276)
+	panelRW     = int32(300)
+	outlineW    = int32(224)
 	fontSize    = int32(16)
 	fontSizeSm  = int32(14)
 	fontSizeLg  = int32(20)
@@ -57,32 +55,36 @@ const (
 	gizmoMargin = float32(18)
 	navBtnW     = int32(62)
 	navBtnH     = int32(32)
+	rowH        = int32(26)
 )
 
-// ── Palette — Render Zero / Blender DNA ───────────────────────
-// Warm charcoal neutrals, Blender orange accent, steel teal secondary.
-// Zero blue-tinting, zero purple.
+// ── Palette ───────────────────────────────────────────────────
 var (
-	cBG        = rl.Color{R: 28, G: 28, B: 28, A: 255}   // viewport bg
-	cPanel     = rl.Color{R: 36, G: 36, B: 36, A: 255}   // panel / header bg
-	cBorder    = rl.Color{R: 18, G: 18, B: 18, A: 255}   // hard separator
-	cBorderLo  = rl.Color{R: 26, G: 26, B: 26, A: 255}   // soft separator
-	cAccent    = rl.Color{R: 232, G: 125, B: 13, A: 255} // Blender orange
-	cAccentDim = rl.Color{R: 160, G: 84, B: 8, A: 255}   // orange dim
-	cPurple    = rl.Color{R: 78, G: 142, B: 166, A: 255} // steel teal (secondary)
-	cPurpleDim = rl.Color{R: 42, G: 88, B: 106, A: 255}  // steel teal dim
-	cText      = rl.Color{R: 210, G: 210, B: 210, A: 255} // primary text
-	cTextDim   = rl.Color{R: 120, G: 120, B: 120, A: 255} // muted text
-	cTextBrt   = rl.Color{R: 240, G: 240, B: 240, A: 255} // bright text
-	cHover     = rl.Color{R: 50, G: 50, B: 50, A: 255}   // hover fill
-	cGridMin   = rl.Color{R: 38, G: 38, B: 38, A: 255}   // minor grid line
-	cGridMaj   = rl.Color{R: 52, G: 52, B: 52, A: 255}   // major grid line
+	cBG        = rl.Color{R: 28, G: 28, B: 28, A: 255}
+	cPanel     = rl.Color{R: 36, G: 36, B: 36, A: 255}
+	cPanelDark = rl.Color{R: 30, G: 30, B: 30, A: 255}
+	cBorder    = rl.Color{R: 18, G: 18, B: 18, A: 255}
+	cBorderLo  = rl.Color{R: 26, G: 26, B: 26, A: 255}
+	cAccent    = rl.Color{R: 232, G: 125, B: 13, A: 255}
+	cAccentDim = rl.Color{R: 160, G: 84, B: 8, A: 255}
+	cPurple    = rl.Color{R: 78, G: 142, B: 166, A: 255}
+	cPurpleDim = rl.Color{R: 42, G: 88, B: 106, A: 255}
+	cGreen     = rl.Color{R: 80, G: 185, B: 105, A: 255}
+	cGold      = rl.Color{R: 215, G: 180, B: 50, A: 255}
+	cRed       = rl.Color{R: 200, G: 70, B: 60, A: 255}
+	cText      = rl.Color{R: 210, G: 210, B: 210, A: 255}
+	cTextDim   = rl.Color{R: 120, G: 120, B: 120, A: 255}
+	cTextBrt   = rl.Color{R: 240, G: 240, B: 240, A: 255}
+	cHover     = rl.Color{R: 50, G: 50, B: 50, A: 255}
+	cSelRow    = rl.Color{R: 232, G: 125, B: 13, A: 30}
+	cSelBorder = rl.Color{R: 232, G: 125, B: 13, A: 90}
+	cGridMin   = rl.Color{R: 38, G: 38, B: 38, A: 255}
+	cGridMaj   = rl.Color{R: 52, G: 52, B: 52, A: 255}
 	cAxisX     = rl.Color{R: 186, G: 60, B: 60, A: 200}
 	cAxisY     = rl.Color{R: 60, G: 186, B: 60, A: 200}
 	cAxisZ     = rl.Color{R: 60, G: 100, B: 186, A: 200}
 	cNavBg     = rl.Color{R: 30, G: 30, B: 30, A: 236}
 )
-
 
 // ── Enums ─────────────────────────────────────────────────────
 type ShadingMode int
@@ -109,12 +111,19 @@ const (
 type NavMode int
 
 const (
-	NavDefault NavMode = iota // MMB-only
-	NavOrbit                  // LMB drag → orbit
-	NavPan                    // LMB drag → pan
+	NavDefault NavMode = iota
+	NavOrbit
+	NavPan
 )
 
-// ── State structs ─────────────────────────────────────────────
+type SceneItemType int
+
+const (
+	ItemMesh SceneItemType = iota
+	ItemCamera
+)
+
+// ── Structs ───────────────────────────────────────────────────
 type OrbitCam struct {
 	target    rl.Vector3
 	azimuth   float32
@@ -128,7 +137,8 @@ type OrbitCam struct {
 	panning   bool
 }
 
-type ModelState struct {
+type SceneObject struct {
+	id          int
 	model       rl.Model
 	loaded      bool
 	name        string
@@ -139,26 +149,75 @@ type ModelState struct {
 	meshCount   int
 	vertexCount int
 	triCount    int
+	visible     bool
+	// User transform
+	position  rl.Vector3
+	rotY      float32 // degrees, Y-axis
+	userScale float32 // multiplier on top of scaleFactor
+}
+
+type RenderCamera struct {
+	id       int
+	name     string
+	position rl.Vector3
+	target   rl.Vector3
+	fovy     float32
+	active   bool // designated render camera
+}
+
+type HDRIState struct {
+	loaded          bool
+	name            string
+	panorama        rl.Texture2D
+	skyboxModel     rl.Model
+	skyboxShader    rl.Shader
+	intensity       float32
+	skyRotation     float32
+	useIBL          bool
+	locSkyIntensity int32
+	locSkyRotation  int32
+}
+
+type RenderOutput struct {
+	texture    rl.RenderTexture2D
+	width      int32
+	height     int32
+	rendered   bool
+	showOutput bool
 }
 
 type UIState struct {
-	shading      ShadingMode
-	view         PresetView
-	navMode      NavMode
-	grid         bool
-	axes         bool
-	wireOver     bool
-	stats        bool
+	outliner     bool
 	rightPanel   bool
-	lightAz      float32
-	lightEl      float32
-	ambient      float32
-	secObject    bool
-	secTransform bool
-	secDisplay   bool
-	secLighting  bool
-	statusMsg    string
-	statusTimer  float32
+	selectedID   int
+	selectedType SceneItemType
+	// Viewport
+	shading  ShadingMode
+	view     PresetView
+	navMode  NavMode
+	grid     bool
+	axes     bool
+	wireOver bool
+	stats    bool
+	// Panel sections
+	secOutliner    bool
+	secObject      bool
+	secTransform   bool
+	secCamera      bool
+	secDisplay     bool
+	secLighting    bool
+	secEnvironment bool
+	secRender      bool
+	// Lighting (global)
+	lightAz float32
+	lightEl float32
+	ambient float32
+	// Render settings
+	renderW int32
+	renderH int32
+	// Status
+	statusMsg   string
+	statusTimer float32
 }
 
 // ── Shaders ───────────────────────────────────────────────────
@@ -185,11 +244,14 @@ in vec3 vPos;
 in vec3 vNorm;
 in vec2 vUV;
 uniform sampler2D texture0;
-uniform vec4  colDiffuse;
-uniform vec3  uLightDir;
-uniform vec3  uLightColor;
-uniform float uAmbient;
-uniform vec3  uViewPos;
+uniform vec4      colDiffuse;
+uniform vec3      uLightDir;
+uniform vec3      uLightColor;
+uniform float     uAmbient;
+uniform vec3      uViewPos;
+uniform sampler2D uEnvPano;
+uniform float     uUseHDRI;
+uniform float     uEnvIntensity;
 out vec4 fragColor;
 void main() {
     vec4  tex  = texture(texture0, vUV) * colDiffuse;
@@ -199,33 +261,77 @@ void main() {
     vec3  V    = normalize(uViewPos - vPos);
     vec3  H    = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 48.0) * 0.25;
-    vec3  lit  = (uAmbient + diff + spec) * uLightColor;
-    fragColor  = vec4(clamp(lit, 0.0, 1.0) * tex.rgb, tex.a);
+    float amb  = uAmbient;
+    vec3  envSpec = vec3(0.0);
+    if (uUseHDRI > 0.5) {
+        vec3  R   = reflect(-V, N);
+        vec2  uv  = vec2(atan(R.z, R.x) * 0.15915 + 0.5,
+                         asin(clamp(R.y, -1.0, 1.0)) * 0.31831 + 0.5);
+        vec3  env = texture(uEnvPano, uv).rgb * uEnvIntensity;
+        env = env / (env + vec3(1.0));
+        envSpec = env * 0.18;
+        amb = max(uAmbient, uEnvIntensity * 0.08);
+    }
+    vec3 lit = (amb + diff + spec) * uLightColor + envSpec;
+    fragColor = vec4(clamp(lit, 0.0, 1.0) * tex.rgb, tex.a);
+}`
+
+const skyboxVS = `#version 330 core
+in vec3 vertexPosition;
+uniform mat4 matProjection;
+uniform mat4 matView;
+out vec3 vDir;
+void main() {
+    vDir = vertexPosition;
+    mat4 rv = mat4(mat3(matView));
+    gl_Position = matProjection * rv * vec4(vertexPosition, 1.0);
+}`
+
+const skyboxFS = `#version 330 core
+in vec3 vDir;
+uniform sampler2D environmentMap;
+uniform float uSkyIntensity;
+uniform float uSkyRotation;
+out vec4 fragColor;
+void main() {
+    float s = sin(uSkyRotation), c = cos(uSkyRotation);
+    vec3  d = vec3(vDir.x*c - vDir.z*s, vDir.y, vDir.x*s + vDir.z*c);
+    d = normalize(d);
+    vec2 uv = vec2(atan(d.z, d.x) * 0.15915 + 0.5,
+                   asin(clamp(d.y, -1.0, 1.0)) * 0.31831 + 0.5);
+    vec3  col = texture(environmentMap, uv).rgb * uSkyIntensity;
+    col = col / (col + vec3(1.0));
+    col = pow(col, vec3(1.0/2.2));
+    fragColor = vec4(col, 1.0);
 }`
 
 // ── Globals ───────────────────────────────────────────────────
 var (
-	cam           OrbitCam
-	obj           ModelState
-	ui            UIState
-	shd           rl.Shader
-	locLightDir   int32
-	locLightColor int32
-	locAmbient    int32
-	locViewPos    int32
-	locMatModel   int32
+	cam             OrbitCam
+	scene           []SceneObject
+	cameras         []RenderCamera
+	nextID          = 1
+	ui              UIState
+	hdri            HDRIState
+	renderOut       RenderOutput
+	shd             rl.Shader
+	locLightDir     int32
+	locLightColor   int32
+	locAmbient      int32
+	locViewPos      int32
+	locMatModel     int32
+	locEnvPano      int32
+	locUseHDRI      int32
+	locEnvIntensity int32
 )
 
 // ── Font helpers ──────────────────────────────────────────────
-// We load one font atlas per render size so DrawTextEx always draws 1:1 —
-// no scaling, no bilinear blur.
 var (
-	gFont       rl.Font
 	gFontLoaded bool
-	gFontSm     rl.Font // fontSizeSm
-	gFontMd     rl.Font // fontSize
-	gFontLg     rl.Font // fontSizeLg
-	gFontXL     rl.Font // fontSizeXL
+	gFontSm     rl.Font
+	gFontMd     rl.Font
+	gFontLg     rl.Font
+	gFontXL     rl.Font
 )
 
 func loadFontAt(path string, size int32) (rl.Font, bool) {
@@ -253,13 +359,11 @@ func initFont() {
 		gFontMd, _ = loadFontAt(p, fontSize)
 		gFontLg, _ = loadFontAt(p, fontSizeLg)
 		gFontXL, _ = loadFontAt(p, fontSizeXL)
-		gFont = gFontMd
 		gFontLoaded = true
 		return
 	}
 }
 
-// fontFor returns the pre-baked atlas that exactly matches sz.
 func fontFor(sz int32) rl.Font {
 	switch sz {
 	case fontSizeSm:
@@ -273,47 +377,55 @@ func fontFor(sz int32) rl.Font {
 	}
 }
 
-// txt draws text at pixel-exact size — no scaling artefacts.
 func txt(s string, x, y, sz int32, c rl.Color) {
 	if gFontLoaded {
-		f := fontFor(sz)
-		rl.DrawTextEx(f, s, rl.Vector2{X: float32(x), Y: float32(y)},
+		rl.DrawTextEx(fontFor(sz), s, rl.Vector2{X: float32(x), Y: float32(y)},
 			float32(sz), 1.0, c)
 	} else {
 		rl.DrawText(s, x, y, sz, c)
 	}
 }
 
-// txtC draws text horizontally centered at cx.
 func txtC(s string, cx, y, sz int32, c rl.Color) {
-	w := measure(s, sz)
-	txt(s, cx-w/2, y, sz, c)
+	txt(s, cx-measure(s, sz)/2, y, sz, c)
 }
 
-// measure returns the pixel width of a string at the given size.
 func measure(s string, sz int32) int32 {
 	if gFontLoaded {
-		f := fontFor(sz)
-		v := rl.MeasureTextEx(f, s, float32(sz), 1.0)
-		return int32(v.X)
+		return int32(rl.MeasureTextEx(fontFor(sz), s, float32(sz), 1.0).X)
 	}
 	return rl.MeasureText(s, sz)
 }
 
-// ── Helpers ───────────────────────────────────────────────────
+// ── Misc helpers ──────────────────────────────────────────────
 func setStatus(f string, a ...any) {
 	ui.statusMsg = fmt.Sprintf(f, a...)
 	ui.statusTimer = 4.0
 }
 
+func clamp32(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 func vpRect(sw, sh int32) rl.Rectangle {
+	lw := int32(0)
+	if ui.outliner {
+		lw = outlineW
+	}
 	pw := int32(0)
 	if ui.rightPanel {
 		pw = panelRW
 	}
 	return rl.Rectangle{
-		X: 0, Y: float32(topbarH),
-		Width: float32(sw - pw), Height: float32(sh - topbarH - bottombarH),
+		X: float32(lw), Y: float32(topbarH),
+		Width:  float32(sw - lw - pw),
+		Height: float32(sh - topbarH - bottombarH),
 	}
 }
 
@@ -324,7 +436,44 @@ func panelRect(sw, sh int32) rl.Rectangle {
 	}
 }
 
-// ── Camera ────────────────────────────────────────────────────
+// ── Selection helpers ─────────────────────────────────────────
+func getSelectedObject() *SceneObject {
+	if ui.selectedType != ItemMesh {
+		return nil
+	}
+	for i := range scene {
+		if scene[i].id == ui.selectedID {
+			return &scene[i]
+		}
+	}
+	return nil
+}
+
+func getSelectedCamera() *RenderCamera {
+	if ui.selectedType != ItemCamera {
+		return nil
+	}
+	for i := range cameras {
+		if cameras[i].id == ui.selectedID {
+			return &cameras[i]
+		}
+	}
+	return nil
+}
+
+func getActiveRenderCamera() *RenderCamera {
+	for i := range cameras {
+		if cameras[i].active {
+			return &cameras[i]
+		}
+	}
+	if len(cameras) > 0 {
+		return &cameras[0]
+	}
+	return nil
+}
+
+// ── Orbit camera ─────────────────────────────────────────────
 func camInit() {
 	cam = OrbitCam{azimuth: 0.785, elevation: 0.524, distance: 6, fovy: 60}
 }
@@ -347,13 +496,63 @@ func camGet() rl.Camera3D {
 	}
 }
 
-func camFocus() {
-	if !obj.loaded {
+func camFocusAll() {
+	if len(scene) == 0 {
 		return
 	}
-	cam.target = obj.center
-	sz := rl.Vector3Subtract(obj.bounds.Max, obj.bounds.Min)
-	cam.distance = float32(math.Max(float64(rl.Vector3Length(sz)*1.4), 0.5))
+	first := true
+	minV := rl.Vector3{}
+	maxV := rl.Vector3{}
+	for _, o := range scene {
+		if !o.loaded || !o.visible {
+			continue
+		}
+		ns := o.scaleFactor * o.userScale
+		ext := rl.Vector3Scale(rl.Vector3Subtract(o.bounds.Max, o.bounds.Min), ns*0.5)
+		lo := rl.Vector3Subtract(o.position, ext)
+		hi := rl.Vector3Add(o.position, ext)
+		if first {
+			minV, maxV = lo, hi
+			first = false
+		} else {
+			if lo.X < minV.X {
+				minV.X = lo.X
+			}
+			if lo.Y < minV.Y {
+				minV.Y = lo.Y
+			}
+			if lo.Z < minV.Z {
+				minV.Z = lo.Z
+			}
+			if hi.X > maxV.X {
+				maxV.X = hi.X
+			}
+			if hi.Y > maxV.Y {
+				maxV.Y = hi.Y
+			}
+			if hi.Z > maxV.Z {
+				maxV.Z = hi.Z
+			}
+		}
+	}
+	if first {
+		return
+	}
+	cam.target = rl.Vector3Scale(rl.Vector3Add(minV, maxV), 0.5)
+	diag := rl.Vector3Length(rl.Vector3Subtract(maxV, minV))
+	cam.distance = float32(math.Max(float64(diag*1.4), 0.5))
+}
+
+func camFocusSelected() {
+	o := getSelectedObject()
+	if o == nil {
+		camFocusAll()
+		return
+	}
+	ns := o.scaleFactor * o.userScale
+	sz := rl.Vector3Length(rl.Vector3Subtract(o.bounds.Max, o.bounds.Min))
+	cam.target = o.position
+	cam.distance = float32(math.Max(float64(sz*ns*1.4), 0.5))
 }
 
 func camPreset(v PresetView) {
@@ -384,7 +583,6 @@ func camUpdate(vp rl.Rectangle) {
 	shift := rl.IsKeyDown(rl.KeyLeftShift) || rl.IsKeyDown(rl.KeyRightShift)
 	inVP := rl.CheckCollisionPointRec(mouse, vp)
 
-	// Scroll zoom
 	if inVP && scroll != 0 {
 		cam.distance -= scroll * cam.distance * 0.08
 		if cam.distance < 0.05 {
@@ -392,11 +590,8 @@ func camUpdate(vp rl.Rectangle) {
 		}
 	}
 
-	// Determine active orbit/pan from MMB or on-screen nav mode
-	activeOrbit := (mmb && !shift && inVP) ||
-		(lmb && ui.navMode == NavOrbit && inVP)
-	activePan := (mmb && shift && inVP) ||
-		(lmb && ui.navMode == NavPan && inVP)
+	activeOrbit := (mmb && !shift && inVP) || (lmb && ui.navMode == NavOrbit && inVP)
+	activePan := (mmb && shift && inVP) || (lmb && ui.navMode == NavPan && inVP)
 
 	if activeOrbit || activePan {
 		if !cam.dragging && !cam.panning {
@@ -431,17 +626,7 @@ func camUpdate(vp rl.Rectangle) {
 	}
 }
 
-func clamp32(v, lo, hi float32) float32 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-// ── Shader ────────────────────────────────────────────────────
+// ── Shader system ─────────────────────────────────────────────
 func shaderInit() {
 	shd = rl.LoadShaderFromMemory(vsSource, fsSource)
 	locLightDir = rl.GetShaderLocation(shd, "uLightDir")
@@ -449,6 +634,9 @@ func shaderInit() {
 	locAmbient = rl.GetShaderLocation(shd, "uAmbient")
 	locViewPos = rl.GetShaderLocation(shd, "uViewPos")
 	locMatModel = rl.GetShaderLocation(shd, "matModel")
+	locEnvPano = rl.GetShaderLocation(shd, "uEnvPano")
+	locUseHDRI = rl.GetShaderLocation(shd, "uUseHDRI")
+	locEnvIntensity = rl.GetShaderLocation(shd, "uEnvIntensity")
 
 	setShaderLoc(&shd, rl.ShaderLocMatrixModel, locMatModel)
 	setShaderLoc(&shd, rl.ShaderLocVectorView, locViewPos)
@@ -458,30 +646,128 @@ func setShaderLoc(s *rl.Shader, slot, value int32) {
 	if s.Locs == nil {
 		return
 	}
-	locPtr := (*int32)(unsafe.Pointer(
+	p := (*int32)(unsafe.Pointer(
 		uintptr(unsafe.Pointer(s.Locs)) + uintptr(slot)*unsafe.Sizeof(int32(0))))
-	*locPtr = value
+	*p = value
 }
 
 func shaderUpdate(c rl.Camera3D) {
 	lx := float32(math.Sin(float64(ui.lightAz))) * float32(math.Cos(float64(ui.lightEl)))
 	ly := float32(math.Sin(float64(ui.lightEl)))
 	lz := float32(math.Cos(float64(ui.lightAz))) * float32(math.Cos(float64(ui.lightEl)))
-
 	ld := [3]float32{lx, ly, lz}
 	lc := [3]float32{1, 1, 1}
 	vp := [3]float32{c.Position.X, c.Position.Y, c.Position.Z}
-
 	rl.SetShaderValue(shd, locLightDir, ld[:], rl.ShaderUniformVec3)
 	rl.SetShaderValue(shd, locLightColor, lc[:], rl.ShaderUniformVec3)
 	rl.SetShaderValue(shd, locAmbient, []float32{ui.ambient}, rl.ShaderUniformFloat)
 	rl.SetShaderValue(shd, locViewPos, vp[:], rl.ShaderUniformVec3)
+
+	useHDRI := float32(0)
+	intensity := float32(0)
+	if hdri.loaded {
+		useHDRI = 1
+		intensity = hdri.intensity
+		rl.SetShaderValueTexture(shd, locEnvPano, hdri.panorama)
+	}
+	rl.SetShaderValue(shd, locUseHDRI, []float32{useHDRI}, rl.ShaderUniformFloat)
+	rl.SetShaderValue(shd, locEnvIntensity, []float32{intensity}, rl.ShaderUniformFloat)
 }
 
-// ── Model ─────────────────────────────────────────────────────
-func loadModel(path string) bool {
-	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+// ── HDRI system ───────────────────────────────────────────────
+func hdriInit() {
+	hdri.skyboxShader = rl.LoadShaderFromMemory(skyboxVS, skyboxFS)
+	hdri.locSkyIntensity = rl.GetShaderLocation(hdri.skyboxShader, "uSkyIntensity")
+	hdri.locSkyRotation = rl.GetShaderLocation(hdri.skyboxShader, "uSkyRotation")
+	hdri.intensity = 1.0
+	hdri.useIBL = true
+}
 
+func unloadHDRI() {
+	if hdri.panorama.ID != 0 {
+		rl.UnloadTexture(hdri.panorama)
+	}
+	if hdri.skyboxModel.MaterialCount != 0 {
+		rl.UnloadModel(hdri.skyboxModel)
+	}
+	hdri.panorama = rl.Texture2D{}
+	hdri.skyboxModel = rl.Model{}
+	hdri.loaded = false
+	hdri.name = ""
+}
+
+func loadHDRI(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".hdr", ".png", ".jpg", ".jpeg", ".tga":
+	default:
+		if ext == ".exr" {
+			setStatus("HDRI: .exr is not supported by this build, use .hdr or LDR images")
+		} else {
+			setStatus("HDRI: use .hdr or image formats")
+		}
+		return false
+	}
+
+	if hdri.loaded {
+		unloadHDRI()
+	}
+
+	img := rl.LoadImage(path)
+	if img == nil || img.Data == nil {
+		if img != nil {
+			rl.UnloadImage(img)
+		}
+		setStatus("HDRI: failed to load — %s", filepath.Base(path))
+		return false
+
+	}
+	if ext == ".hdr" {
+		rl.ImageFormat(img, rl.UncompressedR32g32b32a32)
+	}
+	hdri.panorama = rl.LoadTextureFromImage(img)
+	rl.UnloadImage(img)
+	if hdri.panorama.ID == 0 {
+		setStatus("HDRI: texture creation failed")
+		return false
+	}
+	rl.SetTextureFilter(hdri.panorama, rl.FilterBilinear)
+	rl.SetTextureWrap(hdri.panorama, rl.WrapClamp)
+
+	// Build skybox cube
+	mesh := rl.GenMeshCube(1, 1, 1)
+	hdri.skyboxModel = rl.LoadModelFromMesh(mesh)
+
+	// Assign skybox shader + panorama texture to material
+	mat := modelMaterial(hdri.skyboxModel, 0)
+	mat.Shader = hdri.skyboxShader
+
+	mat.GetMap(rl.MapAlbedo).Texture = hdri.panorama
+	panoLoc := rl.GetShaderLocation(hdri.skyboxShader, "environmentMap")
+	rl.SetShaderValueTexture(hdri.skyboxShader, panoLoc, hdri.panorama)
+
+	hdri.loaded = true
+	hdri.name = filepath.Base(path)
+	setStatus("Environment loaded: %s", hdri.name)
+	return true
+}
+
+func drawSkybox() {
+	if !hdri.loaded {
+		return
+	}
+	rl.SetShaderValue(hdri.skyboxShader, hdri.locSkyIntensity,
+		[]float32{hdri.intensity}, rl.ShaderUniformFloat)
+	rl.SetShaderValue(hdri.skyboxShader, hdri.locSkyRotation,
+		[]float32{hdri.skyRotation}, rl.ShaderUniformFloat)
+	rl.DisableDepthTest()
+	rl.DrawModel(hdri.skyboxModel, rl.Vector3{}, 1.0, rl.White)
+	rl.EnableDepthTest()
+}
+
+// ── Model loading ─────────────────────────────────────────────
+func addModelToScene(path string) bool {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	switch ext {
 	case "obj", "fbx", "gltf", "glb", "iqm", "m3d":
 	default:
@@ -489,55 +775,121 @@ func loadModel(path string) bool {
 		return false
 	}
 
-	if obj.loaded {
-		rl.UnloadModel(obj.model)
-		obj.loaded = false
+	restoreLogs := false
+	if ext == "obj" {
+		rl.SetTraceLogLevel(rl.LogError)
+		restoreLogs = true
 	}
-
 	mdl := rl.LoadModel(path)
+	if restoreLogs {
+		rl.SetTraceLogLevel(rl.LogInfo)
+	}
 	if mdl.MeshCount == 0 {
 		setStatus("Failed to load: %s", filepath.Base(path))
 		return false
 	}
 
-	obj.model = mdl
-	obj.loaded = true
-	obj.ext = ext
-
 	base := filepath.Base(path)
+	name := base
 	if dot := strings.LastIndex(base, "."); dot >= 0 {
-		obj.name = base[:dot]
-	} else {
-		obj.name = base
+		name = base[:dot]
 	}
 
-	obj.meshCount = int(mdl.MeshCount)
-	obj.vertexCount = 0
-	obj.triCount = 0
-	for i := 0; i < obj.meshCount; i++ {
+	var vc, tc int
+	mc := int(mdl.MeshCount)
+	for i := 0; i < mc; i++ {
 		m := modelMesh(mdl, i)
-		obj.vertexCount += int(m.VertexCount)
-		obj.triCount += int(m.TriangleCount)
+		vc += int(m.VertexCount)
+		tc += int(m.TriangleCount)
 	}
 
-	obj.bounds = rl.GetModelBoundingBox(mdl)
-	obj.center = rl.Vector3Scale(rl.Vector3Add(obj.bounds.Min, obj.bounds.Max), 0.5)
-	diag := rl.Vector3Length(rl.Vector3Subtract(obj.bounds.Max, obj.bounds.Min))
+	bb := rl.GetModelBoundingBox(mdl)
+	center := rl.Vector3Scale(rl.Vector3Add(bb.Min, bb.Max), 0.5)
+	diag := rl.Vector3Length(rl.Vector3Subtract(bb.Max, bb.Min))
+	sf := float32(1)
 	if diag > 0.001 {
-		obj.scaleFactor = 2.0 / diag
-	} else {
-		obj.scaleFactor = 1.0
+		sf = 2.0 / diag
 	}
 
+	// Assign main shader to all materials
 	for i := int32(0); i < mdl.MaterialCount; i++ {
 		mat := modelMaterial(mdl, int(i))
 		mat.Shader = shd
 	}
 
-	camFocus()
-	setStatus("Loaded %s  (%d meshes, %d verts, %d tris)",
-		filepath.Base(path), obj.meshCount, obj.vertexCount, obj.triCount)
+	obj := SceneObject{
+		id:          nextID,
+		model:       mdl,
+		loaded:      true,
+		name:        name,
+		ext:         ext,
+		bounds:      bb,
+		center:      center,
+		scaleFactor: sf,
+		meshCount:   mc,
+		vertexCount: vc,
+		triCount:    tc,
+		visible:     true,
+		userScale:   1.0,
+	}
+
+	// Offset new objects so they don't stack exactly
+	if len(scene) > 0 {
+		obj.position.X = float32(len(scene)) * 0.3
+	}
+
+	scene = append(scene, obj)
+	nextID++
+
+	ui.selectedID = obj.id
+	ui.selectedType = ItemMesh
+
+	if len(scene) == 1 {
+		camFocusAll()
+	}
+	setStatus("Added %s  (%d meshes, %d verts, %d tris)", base, mc, vc, tc)
 	return true
+}
+
+func removeSelected() {
+	if ui.selectedType == ItemMesh {
+		for i := range scene {
+			if scene[i].id == ui.selectedID {
+				rl.UnloadModel(scene[i].model)
+				scene = append(scene[:i], scene[i+1:]...)
+				ui.selectedID = -1
+				setStatus("Object removed")
+				return
+			}
+		}
+	} else if ui.selectedType == ItemCamera {
+		for i := range cameras {
+			if cameras[i].id == ui.selectedID {
+				cameras = append(cameras[:i], cameras[i+1:]...)
+				ui.selectedID = -1
+				setStatus("Camera removed")
+				return
+			}
+		}
+	}
+}
+
+func addRenderCamera() {
+	c := camGet()
+	name := fmt.Sprintf("Camera.%03d", nextID)
+	rc := RenderCamera{
+		id:       nextID,
+		name:     name,
+		position: c.Position,
+		target:   c.Target,
+		fovy:     50.0,
+		active:   len(cameras) == 0,
+	}
+	cameras = append(cameras, rc)
+	nextID++
+	ui.selectedID = rc.id
+	ui.selectedType = ItemCamera
+	setStatus("Added %s at viewport position", name)
 }
 
 func modelMesh(m rl.Model, i int) *rl.Mesh {
@@ -548,6 +900,73 @@ func modelMesh(m rl.Model, i int) *rl.Mesh {
 func modelMaterial(m rl.Model, i int) *rl.Material {
 	return (*rl.Material)(unsafe.Pointer(
 		uintptr(unsafe.Pointer(m.Materials)) + uintptr(i)*unsafe.Sizeof(rl.Material{})))
+}
+
+// ── Render output ─────────────────────────────────────────────
+func performRender() {
+	rc := getActiveRenderCamera()
+	if rc == nil {
+		setStatus("No render camera — press C to add one")
+		return
+	}
+
+	w, h := ui.renderW, ui.renderH
+	if w < 1 || h < 1 {
+		setStatus("Render size is invalid")
+		return
+	}
+
+	// (Re)create texture if size changed or first use
+	if renderOut.texture.ID == 0 || renderOut.texture.Texture.Width != w || renderOut.texture.Texture.Height != h {
+		if renderOut.texture.ID != 0 {
+			rl.UnloadRenderTexture(renderOut.texture)
+		}
+		renderOut.texture = rl.LoadRenderTexture(w, h)
+		if renderOut.texture.ID == 0 || renderOut.texture.Texture.ID == 0 {
+			renderOut.texture = rl.RenderTexture2D{}
+			setStatus("Failed to create render target")
+			return
+		}
+	}
+	renderOut.width, renderOut.height = w, h
+
+	renderCam := rl.Camera3D{
+		Position:   rc.position,
+		Target:     rc.target,
+		Up:         rl.Vector3{Y: 1},
+		Fovy:       rc.fovy,
+		Projection: rl.CameraProjection(rl.CameraPerspective),
+	}
+
+	// Point shader view pos at render camera
+	vp := [3]float32{rc.position.X, rc.position.Y, rc.position.Z}
+	rl.SetShaderValue(shd, locViewPos, vp[:], rl.ShaderUniformVec3)
+
+	rl.BeginTextureMode(renderOut.texture)
+	rl.ClearBackground(cBG)
+	rl.BeginMode3D(renderCam)
+	drawSkybox()
+	drawSceneGeometry(ui.shading, ui.wireOver, false)
+	if ui.grid {
+		drawGrid(20, 0.5)
+	}
+	rl.EndMode3D()
+	rl.EndTextureMode()
+
+	renderOut.rendered = true
+	renderOut.showOutput = true
+	setStatus("Render complete  ·  %s  ·  %dx%d  ·  Esc to close", rc.name, w, h)
+}
+
+func saveRender() {
+	if !renderOut.rendered {
+		return
+	}
+	img := rl.LoadImageFromTexture(renderOut.texture.Texture)
+	rl.ImageFlipVertical(img)
+	rl.ExportImage(*img, "render_output.png")
+	rl.UnloadImage(img)
+	setStatus("Saved → render_output.png")
 }
 
 // ── Grid ──────────────────────────────────────────────────────
@@ -569,7 +988,67 @@ func drawGrid(halfSteps int, step float32) {
 	}
 }
 
-// ── Navigation Gizmo ─────────────────────────────────────────
+// ── Scene geometry ────────────────────────────────────────────
+func drawSceneGeometry(shading ShadingMode, wireOver bool, showSelection bool) {
+	for i := range scene {
+		o := &scene[i]
+		if !o.loaded || !o.visible {
+			continue
+		}
+		ns := o.scaleFactor * o.userScale
+		// Offset mesh so its center sits at o.position
+		offset := rl.Vector3Scale(o.center, -ns)
+		worldPos := rl.Vector3Add(offset, o.position)
+		rotAxis := rl.Vector3{Y: 1}
+		scale := rl.Vector3{X: ns, Y: ns, Z: ns}
+
+		switch shading {
+		case ShadeSolid, ShadeMaterial:
+			rl.DrawModelEx(o.model, worldPos, rotAxis, o.rotY, scale, rl.White)
+		case ShadeWire:
+			rl.DrawModelWiresEx(o.model, worldPos, rotAxis, o.rotY, scale,
+				rl.Color{R: 78, G: 142, B: 166, A: 255})
+		}
+		if wireOver && shading != ShadeWire {
+			rl.DrawModelWiresEx(o.model, worldPos, rotAxis, o.rotY, scale,
+				rl.Color{R: 200, G: 130, B: 30, A: 36})
+		}
+
+		// Selection highlight
+		if showSelection && ui.selectedType == ItemMesh && ui.selectedID == o.id {
+			ext := rl.Vector3Scale(rl.Vector3Subtract(o.bounds.Max, o.bounds.Min), ns*0.5)
+			bb := rl.BoundingBox{
+				Min: rl.Vector3Subtract(o.position, ext),
+				Max: rl.Vector3Add(o.position, ext),
+			}
+			rl.DrawBoundingBox(bb, rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 180})
+		}
+	}
+
+	// Draw render camera gizmos
+	if showSelection {
+		for i := range cameras {
+			rc := &cameras[i]
+			isSelected := ui.selectedType == ItemCamera && ui.selectedID == rc.id
+			col := cGold
+			if rc.active {
+				col = cGreen
+			}
+			if isSelected {
+				col = cAccent
+			}
+			// Camera body
+			rl.DrawCubeWires(rc.position, 0.22, 0.16, 0.12, col)
+			// View direction arrow
+			dir := rl.Vector3Normalize(rl.Vector3Subtract(rc.target, rc.position))
+			tip := rl.Vector3Add(rc.position, rl.Vector3Scale(dir, 0.45))
+			rl.DrawLine3D(rc.position, tip, col)
+			rl.DrawSphereWires(rc.position, 0.055, 4, 4, col)
+		}
+	}
+}
+
+// ── Navigation gizmo ─────────────────────────────────────────
 func drawGizmo(sw, sh int32) {
 	c := camGet()
 	fwd := rl.Vector3Normalize(rl.Vector3Subtract(c.Target, c.Position))
@@ -581,9 +1060,11 @@ func drawGizmo(sw, sh int32) {
 		pw = panelRW
 	}
 	cx := float32(sw-pw) - gizmoSize - gizmoMargin
+	if ui.outliner {
+		cx = float32(sw-pw) - gizmoSize - gizmoMargin
+	}
 	cy := float32(topbarH) + gizmoSize + gizmoMargin
 
-	// Soft glass background
 	rl.DrawCircle(int32(cx), int32(cy), gizmoSize,
 		rl.Color{R: 28, G: 28, B: 28, A: 180})
 	rl.DrawCircleLines(int32(cx), int32(cy), gizmoSize,
@@ -632,7 +1113,6 @@ func drawGizmo(sw, sh int32) {
 			rl.DrawLine(int32(cx), int32(cy), ex, ey,
 				rl.Color{R: a.col.R, G: a.col.G, B: a.col.B, A: 140})
 			rl.DrawCircle(ex, ey, 6.0, a.col)
-			// Inner highlight dot
 			rl.DrawCircle(ex-1, ey-1, 1.5, rl.Color{R: 255, G: 255, B: 255, A: 60})
 			tw := measure(a.label, fontSizeSm)
 			txt(a.label, ex-tw/2, ey-fontSizeSm/2, fontSizeSm, rl.White)
@@ -642,66 +1122,26 @@ func drawGizmo(sw, sh int32) {
 	}
 }
 
-// ── Scene ─────────────────────────────────────────────────────
-func drawScene() {
-	if ui.grid {
-		drawGrid(20, 0.5)
-	}
-	if ui.axes {
-		rl.DrawLine3D(rl.Vector3{X: -5}, rl.Vector3{X: 5}, cAxisX)
-		rl.DrawLine3D(rl.Vector3{Y: -5}, rl.Vector3{Y: 5}, cAxisY)
-		rl.DrawLine3D(rl.Vector3{Z: -5}, rl.Vector3{Z: 5}, cAxisZ)
-	}
-	if !obj.loaded {
-		return
-	}
-
-	sf := obj.scaleFactor
-	pos := rl.Vector3Scale(obj.center, -sf)
-	axis := rl.Vector3{Y: 1}
-	scale := rl.Vector3{X: sf, Y: sf, Z: sf}
-
-	switch ui.shading {
-	case ShadeSolid, ShadeMaterial:
-		rl.DrawModelEx(obj.model, pos, axis, 0, scale, rl.White)
-	case ShadeWire:
-		rl.DrawModelWiresEx(obj.model, pos, axis, 0, scale,
-			rl.Color{R: 78, G: 142, B: 166, A: 255})
-	}
-
-	if ui.wireOver && ui.shading != ShadeWire {
-		rl.DrawModelWiresEx(obj.model, pos, axis, 0, scale,
-			rl.Color{R: 200, G: 130, B: 30, A: 36})
-	}
-}
-
 // ── UI primitives ─────────────────────────────────────────────
-
-// roundRect draws a filled rounded rectangle.
 func roundRect(x, y, w, h int32, r float32, c rl.Color) {
 	rl.DrawRectangleRounded(
 		rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)},
 		r, 6, c)
 }
 
-// roundRectLines draws a rounded rectangle outline.
 func roundRectLines(x, y, w, h int32, r float32, c rl.Color) {
 	rl.DrawRectangleRoundedLines(
 		rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)},
 		r, 6, c)
 }
 
-// btn renders a styled button and returns true if clicked.
 func btn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 	mp := rl.GetMousePosition()
 	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)}
 	hov := rl.CheckCollisionPointRec(mp, r)
 
-	// Fill
 	fill := cPanel
 	if active {
-		fill = rl.Color{R: accent.R / 10, G: accent.G / 10, B: accent.B / 10, A: 255}
-		// Stronger tint
 		fill = rl.Color{
 			R: uint8(clamp32(float32(accent.R)*0.16, 0, 255)),
 			G: uint8(clamp32(float32(accent.G)*0.16, 0, 255)),
@@ -711,21 +1151,15 @@ func btn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 	} else if hov {
 		fill = cHover
 	}
-
 	roundRect(x, y, w, h, 0.35, fill)
-
-	// Active: bottom accent bar + border glow
 	if active {
 		roundRectLines(x, y, w, h, 0.35,
 			rl.Color{R: accent.R, G: accent.G, B: accent.B, A: 80})
-		// Bottom accent line
 		rl.DrawRectangle(x+4, y+h-2, w-8, 2,
 			rl.Color{R: accent.R, G: accent.G, B: accent.B, A: 200})
 	} else if hov {
 		roundRectLines(x, y, w, h, 0.35, cBorder)
 	}
-
-	// Label
 	tc := cTextDim
 	if active {
 		tc = accent
@@ -734,19 +1168,16 @@ func btn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 	}
 	tw := measure(label, fontSizeSm)
 	txt(label, x+(w-tw)/2, y+(h-fontSizeSm)/2, fontSizeSm, tc)
-
 	return hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft)
 }
 
-// navBtn is a nav-toolbar specific button with a slightly larger hit area style.
 func navBtn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 	mp := rl.GetMousePosition()
 	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)}
 	hov := rl.CheckCollisionPointRec(mp, r)
 
-	fill := rl.Color{R: 0, G: 0, B: 0, A: 0} // transparent by default
 	if active {
-		fill = rl.Color{
+		fill := rl.Color{
 			R: uint8(clamp32(float32(accent.R)*0.18, 0, 255)),
 			G: uint8(clamp32(float32(accent.G)*0.18, 0, 255)),
 			B: uint8(clamp32(float32(accent.B)*0.18, 0, 255)),
@@ -755,7 +1186,6 @@ func navBtn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 		roundRect(x, y, w, h, 0.40, fill)
 		roundRectLines(x, y, w, h, 0.40,
 			rl.Color{R: accent.R, G: accent.G, B: accent.B, A: 100})
-		// Bottom glow line
 		rl.DrawRectangle(x+5, y+h-2, w-10, 2,
 			rl.Color{R: accent.R, G: accent.G, B: accent.B, A: 220})
 	} else if hov {
@@ -771,11 +1201,9 @@ func navBtn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
 	}
 	tw := measure(label, fontSizeSm)
 	txt(label, x+(w-tw)/2, y+(h-fontSizeSm)/2, fontSizeSm, tc)
-
 	return hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft)
 }
 
-// sectionHeader renders a collapsible panel section header.
 func sectionHeader(x, y, w int32, title string, open *bool) {
 	h := btnH
 	mp := rl.GetMousePosition()
@@ -787,12 +1215,9 @@ func sectionHeader(x, y, w int32, title string, open *bool) {
 	} else {
 		rl.DrawRectangle(x, y, w, h, cPanel)
 	}
-
-	// Left accent bar — tapers to a gradient effect via 2 rects
 	rl.DrawRectangle(x, y+2, 2, h-4, cAccent)
 	rl.DrawRectangle(x+2, y+4, 1, h-8,
 		rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 60})
-
 	txt(title, x+14, y+(h-fontSize)/2, fontSize, cTextBrt)
 
 	arrow := "›"
@@ -802,42 +1227,32 @@ func sectionHeader(x, y, w int32, title string, open *bool) {
 	aw := measure(arrow, fontSize)
 	txt(arrow, x+w-aw-10, y+(h-fontSize)/2, fontSize,
 		rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 160})
-
 	rl.DrawLine(x, y+h, x+w, y+h, cBorderLo)
-
 	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
 		*open = !*open
 	}
 }
 
-// labelRow renders a key/value pair.
 func labelRow(x, y int32, key, val string, valColor rl.Color) {
 	txt(key, x+pad, y, fontSizeSm, cTextDim)
-	txt(val, x+pad+94, y, fontSizeSm, valColor)
+	txt(val, x+pad+98, y, fontSizeSm, valColor)
 }
 
-// slider renders a horizontal drag slider.
 func slider(x, y, w int32, label string, val *float32, lo, hi float32) {
 	if label != "" {
 		txt(label, x, y, fontSizeSm, cTextDim)
 		y += fontSizeSm + 4
 	}
 	slH := int32(4)
-	// Track background
 	roundRect(x, y, w, slH, 0.5, cBorderLo)
-	// Filled portion
 	t := (*val - lo) / (hi - lo)
 	filled := int32(t * float32(w))
 	if filled > 2 {
 		roundRect(x, y, filled, slH, 0.5, cAccentDim)
 	}
-	// Thumb
 	hx := x + int32(t*float32(w-10))
 	roundRect(hx, y-4, 10, slH+8, 0.5, cAccent)
-	// Inner thumb shine
-	roundRect(hx+2, y-2, 6, 3, 0.5,
-		rl.Color{R: 255, G: 255, B: 255, A: 40})
-
+	roundRect(hx+2, y-2, 6, 3, 0.5, rl.Color{R: 255, G: 255, B: 255, A: 40})
 	mp := rl.GetMousePosition()
 	hr := rl.Rectangle{X: float32(x), Y: float32(y - 5), Width: float32(w), Height: float32(slH + 10)}
 	if rl.CheckCollisionPointRec(mp, hr) && rl.IsMouseButtonDown(rl.MouseButtonLeft) {
@@ -846,53 +1261,40 @@ func slider(x, y, w int32, label string, val *float32, lo, hi float32) {
 }
 
 // ── Nav Toolbar ───────────────────────────────────────────────
-// drawNavToolbar renders the floating on-screen navigation control bar.
 func drawNavToolbar(vp rl.Rectangle) {
 	const (
 		bw  = navBtnW
 		bh  = navBtnH
 		gap = int32(2)
-		div = int32(1)
 	)
 
-	// Button groups:  [Orbit Pan] | [+ -] | [Focus Ortho] | [Front Right Top]
-	nBtns := 9          // orbit, pan, +, -, focus, ortho, front, right, top
-	nDivs := 3          // 3 dividers
-	totalW := int32(nBtns)*bw + int32(nBtns-1)*gap + int32(nDivs)*10 + 24 // inner padding
+	nBtns := 9
+	totalW := int32(nBtns)*bw + int32(nBtns-1)*gap + 36
 	totalH := bh + 14
 
 	tx := int32(vp.X) + int32(vp.Width)/2 - totalW/2
 	ty := int32(vp.Y) + int32(vp.Height) - totalH - 14
 
-	// Backdrop pill
 	rl.DrawRectangleRounded(
 		rl.Rectangle{X: float32(tx - 2), Y: float32(ty - 2),
 			Width: float32(totalW + 4), Height: float32(totalH + 4)},
-		0.45, 8,
-		rl.Color{R: 0, G: 0, B: 0, A: 60})
-
+		0.45, 8, rl.Color{R: 0, G: 0, B: 0, A: 60})
 	rl.DrawRectangleRounded(
 		rl.Rectangle{X: float32(tx), Y: float32(ty),
 			Width: float32(totalW), Height: float32(totalH)},
 		0.45, 8, cNavBg)
-
 	rl.DrawRectangleRoundedLines(
 		rl.Rectangle{X: float32(tx), Y: float32(ty),
 			Width: float32(totalW), Height: float32(totalH)},
 		0.45, 8, cBorder)
-
-	// Top-edge highlight
 	rl.DrawRectangleRounded(
 		rl.Rectangle{X: float32(tx + 6), Y: float32(ty),
 			Width: float32(totalW - 12), Height: 1},
-		0.5, 4,
-		rl.Color{R: 255, G: 255, B: 255, A: 12})
+		0.5, 4, rl.Color{R: 255, G: 255, B: 255, A: 12})
 
 	x := tx + 6
 	by := ty + (totalH-bh)/2
 
-	// ── Group 1: Navigate ──
-	// Orbit
 	if navBtn(x, by, bw, bh, "Orbit", ui.navMode == NavOrbit, cAccent) {
 		if ui.navMode == NavOrbit {
 			ui.navMode = NavDefault
@@ -901,8 +1303,6 @@ func drawNavToolbar(vp rl.Rectangle) {
 		}
 	}
 	x += bw + gap
-
-	// Pan
 	if navBtn(x, by, bw, bh, "Pan", ui.navMode == NavPan, cAccent) {
 		if ui.navMode == NavPan {
 			ui.navMode = NavDefault
@@ -911,12 +1311,9 @@ func drawNavToolbar(vp rl.Rectangle) {
 		}
 	}
 	x += bw + gap + 4
-
-	// Divider
 	rl.DrawLine(x, by+4, x, by+bh-4, cBorder)
-	x += div + 6
+	x += 7
 
-	// ── Group 2: Zoom ──
 	if navBtn(x, by, bw, bh, "+  Zoom", false, cAccent) {
 		cam.distance *= 0.82
 		if cam.distance < 0.05 {
@@ -924,22 +1321,17 @@ func drawNavToolbar(vp rl.Rectangle) {
 		}
 	}
 	x += bw + gap
-
 	if navBtn(x, by, bw, bh, "−  Zoom", false, cAccent) {
 		cam.distance *= 1.20
 	}
 	x += bw + gap + 4
-
-	// Divider
 	rl.DrawLine(x, by+4, x, by+bh-4, cBorder)
-	x += div + 6
+	x += 7
 
-	// ── Group 3: Frame + Projection ──
 	if navBtn(x, by, bw, bh, "Focus", false, cAccent) {
-		camFocus()
+		camFocusSelected()
 	}
 	x += bw + gap
-
 	orthoLabel := "Persp"
 	if cam.ortho {
 		orthoLabel = "Ortho"
@@ -948,61 +1340,224 @@ func drawNavToolbar(vp rl.Rectangle) {
 		cam.ortho = !cam.ortho
 	}
 	x += bw + gap + 4
-
-	// Divider
 	rl.DrawLine(x, by+4, x, by+bh-4, cBorder)
-	x += div + 6
+	x += 7
 
-	// ── Group 4: View presets ──
 	if navBtn(x, by, bw, bh, "Front", ui.view == ViewFront, cPurple) {
 		camPreset(ViewFront)
 	}
 	x += bw + gap
-
 	if navBtn(x, by, bw, bh, "Right", ui.view == ViewRight, cPurple) {
 		camPreset(ViewRight)
 	}
 	x += bw + gap
-
 	if navBtn(x, by, bw, bh, "Top", ui.view == ViewTop, cPurple) {
 		camPreset(ViewTop)
 	}
 }
 
+// ── Outliner panel ────────────────────────────────────────────
+func drawOutliner(sh int32) {
+	x := int32(0)
+	y := int32(topbarH)
+	w := outlineW
+	h := sh - topbarH - bottombarH
+
+	rl.DrawRectangle(x, y, w, h, cPanelDark)
+	rl.DrawLine(x+w-1, y, x+w-1, y+h, cBorder)
+
+	// Header
+	rl.DrawRectangle(x, y, w, btnH, cPanel)
+	rl.DrawLine(x, y+btnH, x+w, y+btnH, cBorder)
+	txt("Scene", x+10, y+(btnH-fontSize)/2, fontSize, cTextBrt)
+
+	// Quick-add buttons (right side of header)
+	bw2 := int32(28)
+	bx := x + w - bw2*2 - 8
+	if btn(bx, y+4, bw2, btnH-8, "+Obj", false, cAccent) {
+		if p := openFileDialog(); p != "" {
+			addModelToScene(p)
+		}
+	}
+	bx += bw2 + 2
+	if btn(bx, y+4, bw2, btnH-8, "+Cam", false, cGold) {
+		addRenderCamera()
+	}
+
+	y += btnH + 1
+	iy := y
+
+	// Mesh objects
+	if len(scene) > 0 {
+		txt("OBJECTS", x+10, iy+4, fontSizeSm-2, cTextDim)
+		iy += fontSizeSm + 6
+		for i := range scene {
+			o := &scene[i]
+			isSel := ui.selectedType == ItemMesh && ui.selectedID == o.id
+			rowY := iy
+			if isSel {
+				roundRect(x, rowY, w-1, rowH, 0.15, cSelRow)
+				rl.DrawLine(x, rowY, x, rowY+rowH, cAccent)
+			}
+			mp := rl.GetMousePosition()
+			rr := rl.Rectangle{X: float32(x), Y: float32(rowY), Width: float32(w - 1), Height: float32(rowH)}
+			hov := rl.CheckCollisionPointRec(mp, rr)
+			if hov && !isSel {
+				rl.DrawRectangleRec(rr, rl.Color{R: 50, G: 50, B: 50, A: 120})
+			}
+			if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+				ui.selectedID = o.id
+				ui.selectedType = ItemMesh
+			}
+
+			// Visibility dot
+			vc := cTextDim
+			if o.visible {
+				vc = cGreen
+			}
+			rl.DrawCircle(x+14, rowY+rowH/2, 4, vc)
+			vr := rl.Rectangle{X: float32(x + 7), Y: float32(rowY + rowH/2 - 6), Width: 14, Height: 14}
+			if rl.CheckCollisionPointRec(mp, vr) && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+				o.visible = !o.visible
+			}
+
+			// Mesh icon ▣
+			txt("▣", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+				rl.Color{R: cPurple.R, G: cPurple.G, B: cPurple.B, A: 180})
+
+			// Name
+			nameCol := cText
+			if isSel {
+				nameCol = cAccent
+			}
+			shortName := o.name
+			if measure(shortName, fontSizeSm) > w-52 {
+				for measure(shortName+"…", fontSizeSm) > w-52 && len(shortName) > 0 {
+					shortName = shortName[:len(shortName)-1]
+				}
+				shortName += "…"
+			}
+			txt(shortName, x+40, rowY+(rowH-fontSizeSm)/2, fontSizeSm, nameCol)
+
+			rl.DrawLine(x+8, rowY+rowH, x+w-8, rowY+rowH, cBorderLo)
+			iy += rowH
+		}
+	}
+
+	// Cameras
+	if len(cameras) > 0 {
+		iy += 4
+		txt("CAMERAS", x+10, iy+4, fontSizeSm-2, cTextDim)
+		iy += fontSizeSm + 6
+		for i := range cameras {
+			rc := &cameras[i]
+			isSel := ui.selectedType == ItemCamera && ui.selectedID == rc.id
+			rowY := iy
+			if isSel {
+				roundRect(x, rowY, w-1, rowH, 0.15, cSelRow)
+				rl.DrawLine(x, rowY, x, rowY+rowH, cAccent)
+			}
+			mp := rl.GetMousePosition()
+			rr := rl.Rectangle{X: float32(x), Y: float32(rowY), Width: float32(w - 1), Height: float32(rowH)}
+			hov := rl.CheckCollisionPointRec(mp, rr)
+			if hov && !isSel {
+				rl.DrawRectangleRec(rr, rl.Color{R: 50, G: 50, B: 50, A: 120})
+			}
+			if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+				ui.selectedID = rc.id
+				ui.selectedType = ItemCamera
+			}
+
+			// Active indicator
+			ac := cTextDim
+			if rc.active {
+				ac = cGreen
+			}
+			rl.DrawCircle(x+14, rowY+rowH/2, 4, ac)
+
+			// Camera icon ◎
+			txt("◎", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+				rl.Color{R: cGold.R, G: cGold.G, B: cGold.B, A: 200})
+
+			nameCol := cText
+			if isSel {
+				nameCol = cAccent
+			}
+			txt(rc.name, x+40, rowY+(rowH-fontSizeSm)/2, fontSizeSm, nameCol)
+
+			// Set Active button on hover
+			if hov && !rc.active {
+				setW := measure("●", fontSizeSm)
+				tx2 := x + w - setW - 10
+				txt("●", tx2, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+					rl.Color{R: cGreen.R, G: cGreen.G, B: cGreen.B, A: 100})
+				sr := rl.Rectangle{X: float32(tx2 - 2), Y: float32(rowY + 2), Width: float32(setW + 4), Height: float32(rowH - 4)}
+				if rl.CheckCollisionPointRec(mp, sr) && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+					for j := range cameras {
+						cameras[j].active = cameras[j].id == rc.id
+					}
+				}
+			} else if rc.active {
+				tw2 := measure("●", fontSizeSm)
+				txt("●", x+w-tw2-10, rowY+(rowH-fontSizeSm)/2, fontSizeSm, cGreen)
+			}
+
+			rl.DrawLine(x+8, rowY+rowH, x+w-8, rowY+rowH, cBorderLo)
+			iy += rowH
+		}
+	}
+
+	// Empty scene hint
+	if len(scene) == 0 && len(cameras) == 0 {
+		iy += 12
+		txtC("Drop a model here", x+w/2, iy, fontSizeSm, cTextDim)
+		iy += fontSizeSm + 6
+		txtC("or press O", x+w/2, iy, fontSizeSm, cTextDim)
+	}
+}
+
 // ── Top bar ───────────────────────────────────────────────────
 func drawTopBar(sw int32) {
-	// Base
 	rl.DrawRectangle(0, 0, sw, topbarH, cPanel)
-	// Top accent line (1px)
 	rl.DrawRectangle(0, 0, sw, 1, cAccent)
-	// Bottom border
 	rl.DrawLine(0, topbarH-1, sw, topbarH-1, cBorder)
 
-	// ── Brand ──
+	// Brand
 	txt("RENDER", pad, (topbarH-fontSizeXL)/2, fontSizeXL, cAccent)
 	tw0 := measure("RENDER", fontSizeXL)
 	txt("ZERO", pad+tw0+6, (topbarH-fontSizeXL)/2, fontSizeXL, cTextDim)
 	tw1 := measure("ZERO", fontSizeXL)
-
 	x := pad + tw0 + 6 + tw1 + 14
 
-	// Separator
 	rl.DrawLine(x, 8, x, topbarH-8, cBorder)
 	x += 10
 
-	// Open
-	if btn(x, 6, 60, topbarH-12, "Open", false, cAccent) {
+	// Open model
+	if btn(x, 6, 52, topbarH-12, "Open", false, cAccent) {
 		if p := openFileDialog(); p != "" {
-			loadModel(p)
+			addModelToScene(p)
 		}
 	}
-	x += 64
+	x += 56
 
-	// Separator
+	// Load HDRI
+	if btn(x, 6, 52, topbarH-12, "HDRI", hdri.loaded, cGold) {
+		if p := openFileDialog(); p != "" {
+			loadHDRI(p)
+		}
+	}
+	x += 56
+
+	// Add camera
+	if btn(x, 6, 52, topbarH-12, "+Cam", false, cGold) {
+		addRenderCamera()
+	}
+	x += 56
+
 	rl.DrawLine(x, 8, x, topbarH-8, cBorder)
 	x += 10
 
-	// Shading mode
+	// Shading
 	for i, lbl := range []string{"Solid", "Wire", "Material"} {
 		w2 := int32(56)
 		if btn(x, 6, w2, topbarH-12, lbl, ui.shading == ShadingMode(i), cAccent) {
@@ -1011,7 +1566,6 @@ func drawTopBar(sw int32) {
 		x += w2 + 2
 	}
 
-	// Separator
 	rl.DrawLine(x+2, 8, x+2, topbarH-8, cBorder)
 	x += 14
 
@@ -1031,33 +1585,40 @@ func drawTopBar(sw int32) {
 		x += w2 + 2
 	}
 
-	// Separator
 	rl.DrawLine(x+2, 8, x+2, topbarH-8, cBorder)
 	x += 14
 
-	// View presets
-	viewLabels := []string{"Persp", "Front", "Right", "Top"}
-	viewVals := []PresetView{ViewPersp, ViewFront, ViewRight, ViewTop}
-	for i, lbl := range viewLabels {
-		w2 := int32(48)
-		if btn(x, 6, w2, topbarH-12, lbl, ui.view == viewVals[i], cAccentDim) {
-			camPreset(viewVals[i])
-		}
-		x += w2 + 2
+	// Render button
+	rc := getActiveRenderCamera()
+	renderLabel := "Render"
+	if rc != nil {
+		renderLabel = "Render ▶"
+	}
+	renderCol := cGreen
+	if rc == nil {
+		renderCol = cTextDim
+	}
+	if btn(x, 6, 68, topbarH-12, renderLabel, false, renderCol) {
+		performRender()
 	}
 
-	// Panel toggle (right-anchored)
-	label := "‹‹"
-	if !ui.rightPanel {
-		label = "››"
-	}
-	if btn(sw-42, 6, 34, topbarH-12, label, false, cAccent) {
+	// Panel toggles (right-anchored)
+	if btn(sw-42, 6, 34, topbarH-12, "››", !ui.rightPanel, cAccent) {
 		ui.rightPanel = !ui.rightPanel
 	}
+	if btn(sw-80, 6, 34, topbarH-12, "‹‹", !ui.outliner, cPurple) {
+		ui.outliner = !ui.outliner
+	}
 
-	// Center: filename pill
-	if obj.loaded {
-		info := obj.name + "." + obj.ext
+	// Center: scene info pill
+	if len(scene) > 0 {
+		info := fmt.Sprintf("%d objects", len(scene))
+		if len(cameras) > 0 {
+			info += fmt.Sprintf("  ·  %d cameras", len(cameras))
+		}
+		if hdri.loaded {
+			info += "  ·  HDR"
+		}
 		tw := measure(info, fontSizeSm)
 		pill := tw + 22
 		px2 := sw/2 - pill/2
@@ -1076,72 +1637,145 @@ func drawRightPanel(sw, sh int32) {
 	pw, ph := int32(pr.Width), int32(pr.Height)
 
 	rl.DrawRectangle(px, py, pw, ph, cPanel)
-	// Left border — very subtle
 	rl.DrawLine(px, py, px, py+ph, cBorder)
 
 	y := py + 8
 
-	// ── Object ──
+	// ── Object / Camera section ──────────────────────────────
+	selObj := getSelectedObject()
+	selCam := getSelectedCamera()
+
 	sectionHeader(px, y, pw, "Object", &ui.secObject)
 	y += btnH + 2
 	if ui.secObject {
-		if obj.loaded {
-			labelRow(px, y, "File", obj.name, cText)
+		if selObj != nil {
+			labelRow(px, y, "Name", selObj.name, cText)
 			y += fontSizeSm + 6
-			labelRow(px, y, "Format", strings.ToUpper(obj.ext), cText)
+			labelRow(px, y, "Format", strings.ToUpper(selObj.ext), cText)
 			y += fontSizeSm + 6
-			labelRow(px, y, "Meshes", fmt.Sprintf("%d", obj.meshCount), cAccent)
+			labelRow(px, y, "Meshes", fmt.Sprintf("%d", selObj.meshCount), cAccent)
 			y += fontSizeSm + 6
-			labelRow(px, y, "Vertices", fmt.Sprintf("%d", obj.vertexCount), cAccent)
+			labelRow(px, y, "Vertices", fmt.Sprintf("%d", selObj.vertexCount), cAccent)
 			y += fontSizeSm + 6
-			labelRow(px, y, "Triangles", fmt.Sprintf("%d", obj.triCount), cAccent)
+			labelRow(px, y, "Triangles", fmt.Sprintf("%d", selObj.triCount), cAccent)
+			y += fontSizeSm + 8
+
+			// Visibility toggle
+			bw2 := (pw - pad*3) / 2
+			if btn(px+pad, y, bw2, btnH, "Visible", selObj.visible, cGreen) {
+				selObj.visible = !selObj.visible
+			}
+			if btn(px+pad+bw2+pad, y, bw2, btnH, "Focus", false, cAccent) {
+				camFocusSelected()
+			}
+			y += btnH + 4
+		} else if selCam != nil {
+			labelRow(px, y, "Name", selCam.name, cText)
 			y += fontSizeSm + 6
+			labelRow(px, y, "FoV", fmt.Sprintf("%.0f°", selCam.fovy), cAccent)
+			y += fontSizeSm + 6
+			isActive := "No"
+			if selCam.active {
+				isActive = "Yes ●"
+			}
+			labelRow(px, y, "Active", isActive, cGreen)
+			y += fontSizeSm + 8
 		} else {
-			txt("No model loaded", px+pad, y, fontSizeSm, cTextDim)
+			txt(fmt.Sprintf("%d objects  ·  %d cameras", len(scene), len(cameras)),
+				px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 6
+			if btn(px+pad, y, pw-pad*2, btnH, "Focus All  ( . )", false, cAccent) {
+				camFocusAll()
+			}
+			y += btnH + 4
 		}
-		y += 4
+		y += 2
 	}
 	rl.DrawLine(px, y, px+pw, y, cBorderLo)
 	y += 6
 
-	// ── Transform ──
+	// ── Transform ─────────────────────────────────────────────
 	sectionHeader(px, y, pw, "Transform", &ui.secTransform)
 	y += btnH + 2
 	if ui.secTransform {
-		labelRow(px, y, "Azimuth", fmt.Sprintf("%.1f°", cam.azimuth*180/math.Pi), cAccent)
-		y += fontSizeSm + 6
-		labelRow(px, y, "Elevation", fmt.Sprintf("%.1f°", cam.elevation*180/math.Pi), cAccent)
-		y += fontSizeSm + 6
-		labelRow(px, y, "Distance", fmt.Sprintf("%.3f", cam.distance), cAccent)
-		y += fontSizeSm + 6
-		mode := "Perspective"
-		if cam.ortho {
-			mode = "Orthographic"
-		}
-		labelRow(px, y, "Projection", mode, cText)
-		y += fontSizeSm + 8
-		if obj.loaded {
-			if btn(px+pad, y, pw-pad*2, btnH, "Focus Object  ( . )", false, cAccent) {
-				camFocus()
+		slw := pw - pad*2
+
+		if selObj != nil {
+			slider(px+pad, y, slw, "Position X", &selObj.position.X, -8, 8)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Position Y", &selObj.position.Y, -8, 8)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Position Z", &selObj.position.Z, -8, 8)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Rotation Y", &selObj.rotY, -180, 180)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Scale", &selObj.userScale, 0.05, 5)
+			y += fontSizeSm + 16
+			if btn(px+pad, y, (slw-4)/2, btnH, "Reset Pos", false, cPurple) {
+				selObj.position = rl.Vector3{}
+				selObj.rotY = 0
+				selObj.userScale = 1
+			}
+			if btn(px+pad+(slw-4)/2+4, y, (slw-4)/2, btnH, "Focus", false, cAccent) {
+				camFocusSelected()
+			}
+			y += btnH + 8
+		} else if selCam != nil {
+			slider(px+pad, y, slw, "FoV", &selCam.fovy, 10, 120)
+			y += fontSizeSm + 18
+			labelRow(px, y, "Pos X", fmt.Sprintf("%.2f", selCam.position.X), cAccent)
+			y += fontSizeSm + 6
+			labelRow(px, y, "Pos Y", fmt.Sprintf("%.2f", selCam.position.Y), cAccent)
+			y += fontSizeSm + 6
+			labelRow(px, y, "Pos Z", fmt.Sprintf("%.2f", selCam.position.Z), cAccent)
+			y += fontSizeSm + 8
+			// Sync from viewport
+			if btn(px+pad, y, pw-pad*2, btnH, "Sync from Viewport", false, cAccent) {
+				c := camGet()
+				selCam.position = c.Position
+				selCam.target = c.Target
+				setStatus("Camera synced from viewport")
 			}
 			y += btnH + 6
+			bw2 := (pw - pad*3) / 2
+			activeLabel := "Set Active"
+			if selCam.active {
+				activeLabel = "● Active"
+			}
+			if btn(px+pad, y, bw2, btnH, activeLabel, selCam.active, cGreen) {
+				for j := range cameras {
+					cameras[j].active = cameras[j].id == selCam.id
+				}
+			}
+			if btn(px+pad+bw2+pad, y, bw2, btnH, "Render ▶", false, cGreen) {
+				if !selCam.active {
+					for j := range cameras {
+						cameras[j].active = cameras[j].id == selCam.id
+					}
+				}
+				performRender()
+			}
+			y += btnH + 8
+		} else {
+			labelRow(px, y, "Az", fmt.Sprintf("%.1f°", cam.azimuth*180/math.Pi), cAccent)
+			y += fontSizeSm + 6
+			labelRow(px, y, "El", fmt.Sprintf("%.1f°", cam.elevation*180/math.Pi), cAccent)
+			y += fontSizeSm + 6
+			labelRow(px, y, "Dist", fmt.Sprintf("%.3f", cam.distance), cAccent)
+			y += fontSizeSm + 8
 		}
-		y += 4
+		y += 2
 	}
 	rl.DrawLine(px, y, px+pw, y, cBorderLo)
 	y += 6
 
-	// ── Display ──
+	// ── Display ───────────────────────────────────────────────
 	sectionHeader(px, y, pw, "Display", &ui.secDisplay)
 	y += btnH + 2
 	if ui.secDisplay {
 		sname := [...]string{"Solid", "Wireframe", "Material"}[ui.shading]
 		labelRow(px, y, "Shading", sname, cText)
 		y += fontSizeSm + 8
-
-		txt("Overlays", px+pad, y, fontSizeSm, cTextDim)
-		y += fontSizeSm + 4
 		bw2 := (pw - pad*3) / 2
 		bx := px + pad
 		if btn(bx, y, bw2, btnH, "Grid", ui.grid, cPurple) {
@@ -1162,94 +1796,201 @@ func drawRightPanel(sw, sh int32) {
 	rl.DrawLine(px, y, px+pw, y, cBorderLo)
 	y += 6
 
-	// ── Lighting ──
+	// ── Lighting ──────────────────────────────────────────────
 	sectionHeader(px, y, pw, "Lighting", &ui.secLighting)
 	y += btnH + 2
 	if ui.secLighting {
 		slw := pw - pad*2
-
 		slider(px+pad, y, slw, "Light Azimuth", &ui.lightAz, -math.Pi, math.Pi)
-		y += fontSizeSm + 4 + 8 + 8
-		slider(px+pad, y, slw, "Elevation", &ui.lightEl, -math.Pi/2, math.Pi/2)
-		y += fontSizeSm + 4 + 8 + 8
+		y += fontSizeSm + 20
+		slider(px+pad, y, slw, "Light Elevation", &ui.lightEl, -math.Pi/2, math.Pi/2)
+		y += fontSizeSm + 20
 		slider(px+pad, y, slw, "Ambient", &ui.ambient, 0, 1)
-		y += fontSizeSm + 4 + 8 + 12
+		y += fontSizeSm + 20
+	}
+	rl.DrawLine(px, y, px+pw, y, cBorderLo)
+	y += 6
+
+	// ── Environment (HDRI) ────────────────────────────────────
+	sectionHeader(px, y, pw, "Environment", &ui.secEnvironment)
+	y += btnH + 2
+	if ui.secEnvironment {
+		slw := pw - pad*2
+		if hdri.loaded {
+			labelRow(px, y, "HDRI", hdri.name, cGold)
+			y += fontSizeSm + 6
+			slider(px+pad, y, slw, "Intensity", &hdri.intensity, 0, 4)
+			y += fontSizeSm + 20
+			slider(px+pad, y, slw, "Rotation", &hdri.skyRotation, -math.Pi, math.Pi)
+			y += fontSizeSm + 20
+			bw2 := (pw - pad*3) / 2
+			if btn(px+pad, y, bw2, btnH, "IBL", hdri.useIBL, cGold) {
+				hdri.useIBL = !hdri.useIBL
+			}
+			if btn(px+pad+bw2+pad, y, bw2, btnH, "Unload", false, cRed) {
+				unloadHDRI()
+				setStatus("Environment unloaded")
+			}
+			y += btnH + 8
+		} else {
+			txt("No environment loaded", px+pad, y, fontSizeSm, cTextDim)
+			y += fontSizeSm + 8
+			if btn(px+pad, y, pw-pad*2, btnH, "Load HDRI / Image  ( H )", false, cGold) {
+				if p := openFileDialog(); p != "" {
+					loadHDRI(p)
+				}
+			}
+			y += btnH + 8
+		}
+	}
+	rl.DrawLine(px, y, px+pw, y, cBorderLo)
+	y += 6
+
+	// ── Render ────────────────────────────────────────────────
+	sectionHeader(px, y, pw, "Render", &ui.secRender)
+	y += btnH + 2
+	if ui.secRender {
+		slw := pw - pad*2
+		labelRow(px, y, "Resolution",
+			fmt.Sprintf("%d × %d", ui.renderW, ui.renderH), cText)
+		y += fontSizeSm + 8
+
+		// Resolution presets
+		bw2 := (slw - 4) / 3
+		if btn(px+pad, y, bw2, btnH, "720p", ui.renderW == 1280, cPurple) {
+			ui.renderW, ui.renderH = 1280, 720
+		}
+		if btn(px+pad+bw2+2, y, bw2, btnH, "1080p", ui.renderW == 1920, cPurple) {
+			ui.renderW, ui.renderH = 1920, 1080
+		}
+		if btn(px+pad+bw2*2+4, y, bw2, btnH, "4K", ui.renderW == 3840, cPurple) {
+			ui.renderW, ui.renderH = 3840, 2160
+		}
+		y += btnH + 8
+
+		rc := getActiveRenderCamera()
+		camLabel := "No camera active"
+		if rc != nil {
+			camLabel = rc.name
+		}
+		labelRow(px, y, "Camera", camLabel, cGold)
+		y += fontSizeSm + 8
+
+		if btn(px+pad, y, pw-pad*2, btnH, "Render  ( R )", false, cGreen) {
+			performRender()
+		}
+		y += btnH + 4
+		if renderOut.rendered {
+			bw3 := (pw - pad*3) / 2
+			if btn(px+pad, y, bw3, btnH, "View Output", renderOut.showOutput, cPurple) {
+				renderOut.showOutput = true
+			}
+			if btn(px+pad+bw3+pad, y, bw3, btnH, "Save PNG", false, cAccent) {
+				saveRender()
+			}
+			y += btnH + 4
+		}
+		y += 4
 	}
 
-	// ── Shortcuts pinned to bottom ──
-	bot := py + ph - 118
-	rl.DrawLine(px, bot, px+pw, bot, cBorderLo)
-	bot += 8
+	// ── Shortcuts ─────────────────────────────────────────────
+	bot := py + ph - 132
+	if bot > y {
+		rl.DrawLine(px, bot, px+pw, bot, cBorderLo)
+		bot += 8
+		txt("Shortcuts", px+pad, bot, fontSizeSm, cTextDim)
+		bot += fontSizeSm + 6
 
-	txt("Keyboard shortcuts", px+pad, bot, fontSizeSm, cTextDim)
-	bot += fontSizeSm + 6
-
-	type shortcut struct{ k, v string }
-	shortcuts := []shortcut{
-		{"O", "Open file"},
-		{".", "Focus object"},
-		{"Z", "Cycle shading"},
-		{"G / A / W", "Grid / Axes / Wire"},
-		{"MMB drag", "Orbit"},
-		{"Shift+MMB", "Pan"},
-		{"Scroll", "Zoom"},
-	}
-	for _, s := range shortcuts {
-		kw := measure(s.k, fontSizeSm)
-		txt(s.k, px+pad, bot, fontSizeSm, cAccentDim)
-		txt(s.v, px+pad+kw+8, bot, fontSizeSm,
-			rl.Color{R: cTextDim.R, G: cTextDim.G, B: cTextDim.B, A: 180})
-		bot += fontSizeSm + 4
+		type sc struct{ k, v string }
+		shortcuts := []sc{
+			{"O", "Open model"}, {"H", "Load HDRI"},
+			{"C", "Add camera"}, {"R", "Render"},
+			{".", "Focus"}, {"Del", "Remove"},
+			{"Z", "Cycle shading"}, {"G/A/W", "Grid/Axes/Wire"},
+			{"MMB", "Orbit"}, {"Shift+MMB", "Pan"},
+		}
+		for _, s := range shortcuts {
+			kw := measure(s.k, fontSizeSm)
+			txt(s.k, px+pad, bot, fontSizeSm, cAccentDim)
+			txt(s.v, px+pad+kw+8, bot, fontSizeSm,
+				rl.Color{R: cTextDim.R, G: cTextDim.G, B: cTextDim.B, A: 180})
+			bot += fontSizeSm + 4
+		}
 	}
 }
 
-// ── Bottom bar ────────────────────────────────────────────────
-func drawBottomBar(sw, sh int32) {
-	y := sh - bottombarH
-	rl.DrawRectangle(0, y, sw, bottombarH, cPanel)
-	rl.DrawLine(0, y, sw, y, cBorder)
-	// Bottom purple accent
-	rl.DrawRectangle(0, sh-1, sw, 1, cPurpleDim)
-
-	// Status message
-	if ui.statusTimer > 0 {
-		tc := cText
-		if ui.statusTimer < 1.0 {
-			tc.A = uint8(ui.statusTimer * 255)
-		}
-		txt(ui.statusMsg, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, tc)
-	} else {
-		hint := "No model loaded  —  press O to open or drag & drop a file"
-		if obj.loaded {
-			hint = "Drop a new file to reload  ·  Drag & drop OBJ / FBX / GLTF"
-		}
-		txt(hint, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
+// ── Render output overlay ─────────────────────────────────────
+func drawRenderOutput(sw, sh int32) {
+	if !renderOut.showOutput || !renderOut.rendered {
+		return
 	}
 
-	// Right: FPS + mesh stats
-	rightX := sw - pad
+	// Dim backdrop
+	rl.DrawRectangle(0, 0, sw, sh, rl.Color{R: 0, G: 0, B: 0, A: 200})
 
-	fps := fmt.Sprintf("%d fps", rl.GetFPS())
-	tw := measure(fps, fontSizeSm)
-	txt(fps, rightX-tw, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
-	rightX -= tw + 16
+	// Calculate preview size maintaining aspect ratio
+	maxW := sw - 120
+	maxH := sh - 120
+	rw := renderOut.width
+	rh := renderOut.height
+	scaleX := float32(maxW) / float32(rw)
+	scaleY := float32(maxH) / float32(rh)
+	scale := scaleX
+	if scaleY < scale {
+		scale = scaleY
+	}
+	dispW := int32(float32(rw) * scale)
+	dispH := int32(float32(rh) * scale)
+	ox := (sw - dispW) / 2
+	oy := (sh - dispH) / 2
 
-	if obj.loaded {
-		s := fmt.Sprintf("%d verts  ·  %d tris", obj.vertexCount, obj.triCount)
-		tw2 := measure(s, fontSizeSm)
-		txt(s, rightX-tw2, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
-		rightX -= tw2 + 16
+	// Frame
+	rl.DrawRectangle(ox-2, oy-2, dispW+4, dispH+4, cBorder)
+	rl.DrawRectangle(ox-1, oy-1, dispW+2, dispH+2, cAccent)
+
+	// Rendered texture (flip Y: OpenGL renders upside down)
+	src := rl.Rectangle{
+		X:      0,
+		Y:      float32(rh),
+		Width:  float32(rw),
+		Height: -float32(rh),
+	}
+	dst := rl.Rectangle{
+		X:      float32(ox),
+		Y:      float32(oy),
+		Width:  float32(dispW),
+		Height: float32(dispH),
+	}
+	rl.DrawTexturePro(renderOut.texture.Texture, src, dst, rl.Vector2{}, 0, rl.White)
+
+	// Header bar
+	headerH := int32(34)
+	rl.DrawRectangle(ox, oy-headerH-1, dispW, headerH, cPanel)
+	roundRectLines(ox, oy-headerH-1, dispW, headerH, 0.2, cBorder)
+
+	rc := getActiveRenderCamera()
+	camName := "Render Output"
+	if rc != nil {
+		camName = rc.name + "  ·  Render Output"
+	}
+	txt(camName, ox+10, oy-headerH-1+(headerH-fontSizeSm)/2, fontSizeSm, cTextBrt)
+
+	// Buttons
+	bx := ox + dispW - 4
+	bx -= 70
+	if btn(bx, oy-headerH-1+3, 66, headerH-6, "Save PNG", false, cAccent) {
+		saveRender()
+	}
+	bx -= 58
+	if btn(bx, oy-headerH-1+3, 54, headerH-6, "Close", false, cPurple) {
+		renderOut.showOutput = false
 	}
 
-	// Nav mode indicator
-	if ui.navMode != NavDefault {
-		modeStr := "● Orbit mode"
-		if ui.navMode == NavPan {
-			modeStr = "● Pan mode"
-		}
-		mw := measure(modeStr, fontSizeSm)
-		txt(modeStr, rightX-mw, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cAccent)
-	}
+	// Resolution label
+	resLabel := fmt.Sprintf("%d × %d", renderOut.width, renderOut.height)
+	rw2 := measure(resLabel, fontSizeSm)
+	txt(resLabel, ox+dispW-rw2-10-(70+58+8), oy-headerH-1+(headerH-fontSizeSm)/2,
+		fontSizeSm, cTextDim)
 }
 
 // ── Stats overlay ─────────────────────────────────────────────
@@ -1262,36 +2003,117 @@ func drawStats(vp rl.Rectangle) {
 	if cam.ortho {
 		proj = "Ortho"
 	}
-	s := fmt.Sprintf("%s  ·  %s  ·  dist %.2f  ·  az %.0f°  el %.0f°",
-		names[ui.view], proj, cam.distance,
-		cam.azimuth*180/math.Pi, cam.elevation*180/math.Pi)
+	totalV, totalT := 0, 0
+	for _, o := range scene {
+		if o.loaded && o.visible {
+			totalV += o.vertexCount
+			totalT += o.triCount
+		}
+	}
+	s := fmt.Sprintf("%s · %s · dist %.2f · %dv %dt",
+		names[ui.view], proj, cam.distance, totalV, totalT)
 	tw := measure(s, fontSizeSm)
 	bx := int32(vp.X) + pad - 4
 	by := int32(vp.Y) + pad - 3
-
 	roundRect(bx, by, tw+12, fontSizeSm+8, 0.4,
 		rl.Color{R: 28, G: 28, B: 28, A: 210})
 	txt(s, bx+6, by+4, fontSizeSm, cTextDim)
 }
 
-// drawNoModelHint is intentionally empty — no on-screen prompt shown.
-func drawNoModelHint(sw, sh int32) {}
+// ── Bottom bar ────────────────────────────────────────────────
+func drawBottomBar(sw, sh int32) {
+	y := sh - bottombarH
+	rl.DrawRectangle(0, y, sw, bottombarH, cPanel)
+	rl.DrawLine(0, y, sw, y, cBorder)
+	rl.DrawRectangle(0, sh-1, sw, 1, cPurpleDim)
+
+	if ui.statusTimer > 0 {
+		tc := cText
+		if ui.statusTimer < 1.0 {
+			tc.A = uint8(ui.statusTimer * 255)
+		}
+		txt(ui.statusMsg, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, tc)
+	} else {
+		hint := "Drop model or HDRI  ·  O = open model  ·  H = load HDRI  ·  C = add camera  ·  R = render"
+		if len(scene) > 0 {
+			hint = fmt.Sprintf("%d objects  ·  %d cameras  ·  C = add camera  ·  R = render from active camera",
+				len(scene), len(cameras))
+		}
+		txt(hint, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
+	}
+
+	rightX := sw - pad
+	fps := fmt.Sprintf("%d fps", rl.GetFPS())
+	tw := measure(fps, fontSizeSm)
+	txt(fps, rightX-tw, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
+	rightX -= tw + 16
+
+	if ui.navMode != NavDefault {
+		modeStr := "● Orbit mode"
+		if ui.navMode == NavPan {
+			modeStr = "● Pan mode"
+		}
+		mw := measure(modeStr, fontSizeSm)
+		txt(modeStr, rightX-mw, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cAccent)
+		rightX -= mw + 16
+	}
+
+	if hdri.loaded {
+		s := "HDR: " + hdri.name
+		sw2 := measure(s, fontSizeSm)
+		txt(s, rightX-sw2, y+(bottombarH-fontSizeSm)/2, fontSizeSm,
+			rl.Color{R: cGold.R, G: cGold.G, B: cGold.B, A: 160})
+	}
+}
 
 // ── Input ─────────────────────────────────────────────────────
 func handleInput() {
 	ctrl := rl.IsKeyDown(rl.KeyLeftControl) || rl.IsKeyDown(rl.KeyRightControl)
 
-	if rl.IsKeyPressed(rl.KeyO) {
-		if p := openFileDialog(); p != "" {
-			loadModel(p)
+	// Escape: close render output / cancel nav
+	if rl.IsKeyPressed(rl.KeyEscape) {
+		if renderOut.showOutput {
+			renderOut.showOutput = false
+		} else if ui.navMode != NavDefault {
+			ui.navMode = NavDefault
 		}
 	}
-	if rl.IsKeyPressed(rl.KeyPeriod) {
-		camFocus()
+
+	// Open model
+	if rl.IsKeyPressed(rl.KeyO) {
+		if p := openFileDialog(); p != "" {
+			addModelToScene(p)
+		}
 	}
+
+	// Load HDRI
+	if rl.IsKeyPressed(rl.KeyH) {
+		if p := openFileDialog(); p != "" {
+			loadHDRI(p)
+		}
+	}
+
+	// Add camera
+	if rl.IsKeyPressed(rl.KeyC) {
+		addRenderCamera()
+	}
+
+	// Render
+	if rl.IsKeyPressed(rl.KeyR) {
+		performRender()
+	}
+
+	// Focus
+	if rl.IsKeyPressed(rl.KeyPeriod) {
+		camFocusSelected()
+	}
+
+	// Shading
 	if rl.IsKeyPressed(rl.KeyZ) {
 		ui.shading = (ui.shading + 1) % ShadeCount
 	}
+
+	// Overlays
 	if rl.IsKeyPressed(rl.KeyG) {
 		ui.grid = !ui.grid
 	}
@@ -1301,6 +2123,13 @@ func handleInput() {
 	if rl.IsKeyPressed(rl.KeyA) {
 		ui.axes = !ui.axes
 	}
+
+	// Delete selected
+	if rl.IsKeyPressed(rl.KeyDelete) {
+		removeSelected()
+	}
+
+	// Numpad view presets
 	if rl.IsKeyPressed(rl.KeyKp1) {
 		if ctrl {
 			camPreset(ViewBack)
@@ -1331,19 +2160,22 @@ func handleInput() {
 	if rl.IsKeyPressed(rl.KeyF11) {
 		rl.ToggleFullscreen()
 	}
-	// Escape cancels nav mode
-	if rl.IsKeyPressed(rl.KeyEscape) && ui.navMode != NavDefault {
-		ui.navMode = NavDefault
-	}
 
+	// Drag & drop — models go to scene, HDR goes to environment
 	if rl.IsFileDropped() {
 		files := rl.LoadDroppedFiles()
-		if len(files) > 0 {
-			loadModel(files[0])
+		for _, f := range files {
+			ext := strings.ToLower(filepath.Ext(f))
+			if ext == ".hdr" {
+				loadHDRI(f)
+			} else {
+				addModelToScene(f)
+			}
 		}
 		rl.UnloadDroppedFiles()
 	}
 
+	// Status timer
 	if ui.statusTimer > 0 {
 		ui.statusTimer -= rl.GetFrameTime()
 		if ui.statusTimer < 0 {
@@ -1355,31 +2187,40 @@ func handleInput() {
 // ── Main ──────────────────────────────────────────────────────
 func main() {
 	rl.SetConfigFlags(rl.FlagWindowResizable | rl.FlagMsaa4xHint | rl.FlagVsyncHint)
-	rl.InitWindow(1440, 880, "Render Zero")
+	rl.InitWindow(1600, 920, "Render Zero")
 	rl.SetTargetFPS(144)
 	rl.SetExitKey(0)
 
 	camInit()
 	shaderInit()
+	hdriInit()
 	initFont()
 
 	ui = UIState{
-		shading:      ShadeSolid,
-		view:         ViewPersp,
-		navMode:      NavDefault,
-		grid:         true,
-		axes:         true,
-		stats:        true,
-		rightPanel:   true,
-		lightAz:      -0.8,
-		lightEl:      0.9,
-		ambient:      0.18,
-		secObject:    true,
-		secTransform: true,
-		secDisplay:   true,
-		secLighting:  true,
+		outliner:       true,
+		rightPanel:     true,
+		selectedID:     -1,
+		shading:        ShadeSolid,
+		view:           ViewPersp,
+		navMode:        NavDefault,
+		grid:           true,
+		axes:           true,
+		stats:          true,
+		secOutliner:    true,
+		secObject:      true,
+		secTransform:   true,
+		secCamera:      true,
+		secDisplay:     true,
+		secLighting:    true,
+		secEnvironment: true,
+		secRender:      true,
+		lightAz:        -0.8,
+		lightEl:        0.9,
+		ambient:        0.18,
+		renderW:        1280,
+		renderH:        720,
 	}
-	setStatus("Welcome — drag & drop a model or press O to open")
+	setStatus("Welcome — drag & drop models / HDRI, press O for models, H for environment")
 
 	for !rl.WindowShouldClose() {
 		sw := int32(rl.GetScreenWidth())
@@ -1394,26 +2235,51 @@ func main() {
 		rl.BeginDrawing()
 		rl.ClearBackground(cBG)
 
+		// 3D scene
 		rl.BeginMode3D(c)
-		drawScene()
+		drawSkybox()
+		if ui.grid {
+			drawGrid(20, 0.5)
+		}
+		if ui.axes {
+			rl.DrawLine3D(rl.Vector3{X: -5}, rl.Vector3{X: 5}, cAxisX)
+			rl.DrawLine3D(rl.Vector3{Y: -5}, rl.Vector3{Y: 5}, cAxisY)
+			rl.DrawLine3D(rl.Vector3{Z: -5}, rl.Vector3{Z: 5}, cAxisZ)
+		}
+		drawSceneGeometry(ui.shading, ui.wireOver, true)
 		rl.EndMode3D()
 
-		drawNoModelHint(sw, sh)
+		// 2D overlays
 		drawStats(vp)
 		drawGizmo(sw, sh)
 		drawNavToolbar(vp)
-
 		drawTopBar(sw)
+		if ui.outliner {
+			drawOutliner(sh)
+		}
 		if ui.rightPanel {
 			drawRightPanel(sw, sh)
 		}
 		drawBottomBar(sw, sh)
 
+		// Render output modal (drawn last, on top)
+		drawRenderOutput(sw, sh)
+
 		rl.EndDrawing()
 	}
 
-	if obj.loaded {
-		rl.UnloadModel(obj.model)
+	// Cleanup
+	for i := range scene {
+		if scene[i].loaded {
+			rl.UnloadModel(scene[i].model)
+		}
+	}
+	if hdri.loaded {
+		unloadHDRI()
+	}
+	rl.UnloadShader(hdri.skyboxShader)
+	if renderOut.texture.ID != 0 {
+		rl.UnloadRenderTexture(renderOut.texture)
 	}
 	if gFontLoaded {
 		rl.UnloadFont(gFontSm)
