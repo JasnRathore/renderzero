@@ -252,7 +252,15 @@ uniform vec3      uViewPos;
 uniform sampler2D uEnvPano;
 uniform float     uUseHDRI;
 uniform float     uEnvIntensity;
+uniform float     uEnvRotation;
 out vec4 fragColor;
+vec2 dirToUV(vec3 d) {
+    float s = sin(uEnvRotation), c = cos(uEnvRotation);
+    d = vec3(d.x*c - d.z*s, d.y, d.x*s + d.z*c);
+    d = normalize(d);
+    return vec2(atan(d.z, d.x) * 0.15915 + 0.5,
+                asin(clamp(d.y, -1.0, 1.0)) * 0.31831 + 0.5);
+}
 void main() {
     vec4  tex  = texture(texture0, vUV) * colDiffuse;
     vec3  N    = normalize(vNorm);
@@ -262,17 +270,16 @@ void main() {
     vec3  H    = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 48.0) * 0.25;
     float amb  = uAmbient;
+    vec3  envDiff = vec3(0.0);
     vec3  envSpec = vec3(0.0);
     if (uUseHDRI > 0.5) {
-        vec3  R   = reflect(-V, N);
-        vec2  uv  = vec2(atan(R.z, R.x) * 0.15915 + 0.5,
-                         asin(clamp(R.y, -1.0, 1.0)) * 0.31831 + 0.5);
-        vec3  env = texture(uEnvPano, uv).rgb * uEnvIntensity;
-        env = env / (env + vec3(1.0));
-        envSpec = env * 0.18;
-        amb = max(uAmbient, uEnvIntensity * 0.08);
+        vec3  envN = texture(uEnvPano, dirToUV(N)).rgb * uEnvIntensity;
+        vec3  envR = texture(uEnvPano, dirToUV(reflect(-V, N))).rgb * uEnvIntensity;
+        envDiff = envN / (envN + vec3(1.0));
+        envSpec = envR / (envR + vec3(1.0));
+        amb = max(uAmbient, 0.06 + uEnvIntensity * 0.10);
     }
-    vec3 lit = (amb + diff + spec) * uLightColor + envSpec;
+    vec3 lit = (amb + diff) * uLightColor + spec * uLightColor + envDiff * 0.45 + envSpec * 0.30;
     fragColor = vec4(clamp(lit, 0.0, 1.0) * tex.rgb, tex.a);
 }`
 
@@ -323,6 +330,7 @@ var (
 	locEnvPano      int32
 	locUseHDRI      int32
 	locEnvIntensity int32
+	locEnvRotation  int32
 )
 
 // ── Font helpers ──────────────────────────────────────────────
@@ -637,6 +645,7 @@ func shaderInit() {
 	locEnvPano = rl.GetShaderLocation(shd, "uEnvPano")
 	locUseHDRI = rl.GetShaderLocation(shd, "uUseHDRI")
 	locEnvIntensity = rl.GetShaderLocation(shd, "uEnvIntensity")
+	locEnvRotation = rl.GetShaderLocation(shd, "uEnvRotation")
 
 	setShaderLoc(&shd, rl.ShaderLocMatrixModel, locMatModel)
 	setShaderLoc(&shd, rl.ShaderLocVectorView, locViewPos)
@@ -665,13 +674,16 @@ func shaderUpdate(c rl.Camera3D) {
 
 	useHDRI := float32(0)
 	intensity := float32(0)
-	if hdri.loaded {
+	rotation := float32(0)
+	if hdri.loaded && hdri.useIBL {
 		useHDRI = 1
 		intensity = hdri.intensity
+		rotation = hdri.skyRotation
 		rl.SetShaderValueTexture(shd, locEnvPano, hdri.panorama)
 	}
 	rl.SetShaderValue(shd, locUseHDRI, []float32{useHDRI}, rl.ShaderUniformFloat)
 	rl.SetShaderValue(shd, locEnvIntensity, []float32{intensity}, rl.ShaderUniformFloat)
+	rl.SetShaderValue(shd, locEnvRotation, []float32{rotation}, rl.ShaderUniformFloat)
 }
 
 // ── HDRI system ───────────────────────────────────────────────
@@ -718,7 +730,7 @@ func loadHDRI(path string) bool {
 		if img != nil {
 			rl.UnloadImage(img)
 		}
-		setStatus("HDRI: failed to load — %s", filepath.Base(path))
+		setStatus("HDRI: failed to load - %s", filepath.Base(path))
 		return false
 
 	}
@@ -771,7 +783,7 @@ func addModelToScene(path string) bool {
 	switch ext {
 	case "obj", "fbx", "gltf", "glb", "iqm", "m3d":
 	default:
-		setStatus("Unsupported format — use OBJ, FBX, GLTF, IQM, M3D")
+		setStatus("Unsupported format - use OBJ, FBX, GLTF, IQM, M3D")
 		return false
 	}
 
@@ -906,7 +918,7 @@ func modelMaterial(m rl.Model, i int) *rl.Material {
 func performRender() {
 	rc := getActiveRenderCamera()
 	if rc == nil {
-		setStatus("No render camera — press C to add one")
+		setStatus("No render camera - press C to add one")
 		return
 	}
 
@@ -938,9 +950,7 @@ func performRender() {
 		Projection: rl.CameraProjection(rl.CameraPerspective),
 	}
 
-	// Point shader view pos at render camera
-	vp := [3]float32{rc.position.X, rc.position.Y, rc.position.Z}
-	rl.SetShaderValue(shd, locViewPos, vp[:], rl.ShaderUniformVec3)
+	shaderUpdate(renderCam)
 
 	rl.BeginTextureMode(renderOut.texture)
 	rl.ClearBackground(cBG)
@@ -955,7 +965,7 @@ func performRender() {
 
 	renderOut.rendered = true
 	renderOut.showOutput = true
-	setStatus("Render complete  ·  %s  ·  %dx%d  ·  Esc to close", rc.name, w, h)
+	setStatus("Render complete | %s | %dx%d | Esc to close", rc.name, w, h)
 }
 
 func saveRender() {
@@ -966,7 +976,7 @@ func saveRender() {
 	rl.ImageFlipVertical(img)
 	rl.ExportImage(*img, "render_output.png")
 	rl.UnloadImage(img)
-	setStatus("Saved → render_output.png")
+	setStatus("Saved -> render_output.png")
 }
 
 // ── Grid ──────────────────────────────────────────────────────
@@ -1220,9 +1230,9 @@ func sectionHeader(x, y, w int32, title string, open *bool) {
 		rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 60})
 	txt(title, x+14, y+(h-fontSize)/2, fontSize, cTextBrt)
 
-	arrow := "›"
+	arrow := ">"
 	if *open {
-		arrow = "∨"
+		arrow = "v"
 	}
 	aw := measure(arrow, fontSize)
 	txt(arrow, x+w-aw-10, y+(h-fontSize)/2, fontSize,
@@ -1321,7 +1331,7 @@ func drawNavToolbar(vp rl.Rectangle) {
 		}
 	}
 	x += bw + gap
-	if navBtn(x, by, bw, bh, "−  Zoom", false, cAccent) {
+	if navBtn(x, by, bw, bh, "- Zoom", false, cAccent) {
 		cam.distance *= 1.20
 	}
 	x += bw + gap + 4
@@ -1375,7 +1385,7 @@ func drawOutliner(sh int32) {
 	bw2 := int32(28)
 	bx := x + w - bw2*2 - 8
 	if btn(bx, y+4, bw2, btnH-8, "+Obj", false, cAccent) {
-		if p := openFileDialog(); p != "" {
+		if p := openModelDialog(); p != "" {
 			addModelToScene(p)
 		}
 	}
@@ -1422,7 +1432,7 @@ func drawOutliner(sh int32) {
 			}
 
 			// Mesh icon ▣
-			txt("▣", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+			txt("M", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
 				rl.Color{R: cPurple.R, G: cPurple.G, B: cPurple.B, A: 180})
 
 			// Name
@@ -1432,10 +1442,10 @@ func drawOutliner(sh int32) {
 			}
 			shortName := o.name
 			if measure(shortName, fontSizeSm) > w-52 {
-				for measure(shortName+"…", fontSizeSm) > w-52 && len(shortName) > 0 {
+				for measure(shortName+"...", fontSizeSm) > w-52 && len(shortName) > 0 {
 					shortName = shortName[:len(shortName)-1]
 				}
-				shortName += "…"
+				shortName += "..."
 			}
 			txt(shortName, x+40, rowY+(rowH-fontSizeSm)/2, fontSizeSm, nameCol)
 
@@ -1476,7 +1486,7 @@ func drawOutliner(sh int32) {
 			rl.DrawCircle(x+14, rowY+rowH/2, 4, ac)
 
 			// Camera icon ◎
-			txt("◎", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+			txt("C", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
 				rl.Color{R: cGold.R, G: cGold.G, B: cGold.B, A: 200})
 
 			nameCol := cText
@@ -1487,9 +1497,9 @@ func drawOutliner(sh int32) {
 
 			// Set Active button on hover
 			if hov && !rc.active {
-				setW := measure("●", fontSizeSm)
+				setW := measure("*", fontSizeSm)
 				tx2 := x + w - setW - 10
-				txt("●", tx2, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+				txt("*", tx2, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
 					rl.Color{R: cGreen.R, G: cGreen.G, B: cGreen.B, A: 100})
 				sr := rl.Rectangle{X: float32(tx2 - 2), Y: float32(rowY + 2), Width: float32(setW + 4), Height: float32(rowH - 4)}
 				if rl.CheckCollisionPointRec(mp, sr) && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
@@ -1498,8 +1508,8 @@ func drawOutliner(sh int32) {
 					}
 				}
 			} else if rc.active {
-				tw2 := measure("●", fontSizeSm)
-				txt("●", x+w-tw2-10, rowY+(rowH-fontSizeSm)/2, fontSizeSm, cGreen)
+				tw2 := measure("*", fontSizeSm)
+				txt("*", x+w-tw2-10, rowY+(rowH-fontSizeSm)/2, fontSizeSm, cGreen)
 			}
 
 			rl.DrawLine(x+8, rowY+rowH, x+w-8, rowY+rowH, cBorderLo)
@@ -1534,7 +1544,7 @@ func drawTopBar(sw int32) {
 
 	// Open model
 	if btn(x, 6, 52, topbarH-12, "Open", false, cAccent) {
-		if p := openFileDialog(); p != "" {
+		if p := openModelDialog(); p != "" {
 			addModelToScene(p)
 		}
 	}
@@ -1542,7 +1552,7 @@ func drawTopBar(sw int32) {
 
 	// Load HDRI
 	if btn(x, 6, 52, topbarH-12, "HDRI", hdri.loaded, cGold) {
-		if p := openFileDialog(); p != "" {
+		if p := openHDRIDialog(); p != "" {
 			loadHDRI(p)
 		}
 	}
@@ -1592,7 +1602,7 @@ func drawTopBar(sw int32) {
 	rc := getActiveRenderCamera()
 	renderLabel := "Render"
 	if rc != nil {
-		renderLabel = "Render ▶"
+		renderLabel = "Render >"
 	}
 	renderCol := cGreen
 	if rc == nil {
@@ -1603,10 +1613,10 @@ func drawTopBar(sw int32) {
 	}
 
 	// Panel toggles (right-anchored)
-	if btn(sw-42, 6, 34, topbarH-12, "››", !ui.rightPanel, cAccent) {
+	if btn(sw-42, 6, 34, topbarH-12, ">>", !ui.rightPanel, cAccent) {
 		ui.rightPanel = !ui.rightPanel
 	}
-	if btn(sw-80, 6, 34, topbarH-12, "‹‹", !ui.outliner, cPurple) {
+	if btn(sw-80, 6, 34, topbarH-12, "<<", !ui.outliner, cPurple) {
 		ui.outliner = !ui.outliner
 	}
 
@@ -1614,10 +1624,10 @@ func drawTopBar(sw int32) {
 	if len(scene) > 0 {
 		info := fmt.Sprintf("%d objects", len(scene))
 		if len(cameras) > 0 {
-			info += fmt.Sprintf("  ·  %d cameras", len(cameras))
+			info += fmt.Sprintf(" | %d cameras", len(cameras))
 		}
 		if hdri.loaded {
-			info += "  ·  HDR"
+			info += " | HDR"
 		}
 		tw := measure(info, fontSizeSm)
 		pill := tw + 22
@@ -1672,16 +1682,16 @@ func drawRightPanel(sw, sh int32) {
 		} else if selCam != nil {
 			labelRow(px, y, "Name", selCam.name, cText)
 			y += fontSizeSm + 6
-			labelRow(px, y, "FoV", fmt.Sprintf("%.0f°", selCam.fovy), cAccent)
+			labelRow(px, y, "FoV", fmt.Sprintf("%.0f deg", selCam.fovy), cAccent)
 			y += fontSizeSm + 6
 			isActive := "No"
 			if selCam.active {
-				isActive = "Yes ●"
+				isActive = "Yes *"
 			}
 			labelRow(px, y, "Active", isActive, cGreen)
 			y += fontSizeSm + 8
 		} else {
-			txt(fmt.Sprintf("%d objects  ·  %d cameras", len(scene), len(cameras)),
+			txt(fmt.Sprintf("%d objects | %d cameras", len(scene), len(cameras)),
 				px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 6
 			if btn(px+pad, y, pw-pad*2, btnH, "Focus All  ( . )", false, cAccent) {
@@ -1720,6 +1730,10 @@ func drawRightPanel(sw, sh int32) {
 				camFocusSelected()
 			}
 			y += btnH + 8
+			txt("Arrows move X/Z | PgUp/PgDn move Y", px+pad, y, fontSizeSm, cTextDim)
+			y += fontSizeSm + 4
+			txt("[ ] rotate | - / = scale", px+pad, y, fontSizeSm, cTextDim)
+			y += fontSizeSm + 8
 		} else if selCam != nil {
 			slider(px+pad, y, slw, "FoV", &selCam.fovy, 10, 120)
 			y += fontSizeSm + 18
@@ -1740,14 +1754,14 @@ func drawRightPanel(sw, sh int32) {
 			bw2 := (pw - pad*3) / 2
 			activeLabel := "Set Active"
 			if selCam.active {
-				activeLabel = "● Active"
+				activeLabel = "* Active"
 			}
 			if btn(px+pad, y, bw2, btnH, activeLabel, selCam.active, cGreen) {
 				for j := range cameras {
 					cameras[j].active = cameras[j].id == selCam.id
 				}
 			}
-			if btn(px+pad+bw2+pad, y, bw2, btnH, "Render ▶", false, cGreen) {
+			if btn(px+pad+bw2+pad, y, bw2, btnH, "Render >", false, cGreen) {
 				if !selCam.active {
 					for j := range cameras {
 						cameras[j].active = cameras[j].id == selCam.id
@@ -1757,9 +1771,9 @@ func drawRightPanel(sw, sh int32) {
 			}
 			y += btnH + 8
 		} else {
-			labelRow(px, y, "Az", fmt.Sprintf("%.1f°", cam.azimuth*180/math.Pi), cAccent)
+			labelRow(px, y, "Az", fmt.Sprintf("%.1f deg", cam.azimuth*180/math.Pi), cAccent)
 			y += fontSizeSm + 6
-			labelRow(px, y, "El", fmt.Sprintf("%.1f°", cam.elevation*180/math.Pi), cAccent)
+			labelRow(px, y, "El", fmt.Sprintf("%.1f deg", cam.elevation*180/math.Pi), cAccent)
 			y += fontSizeSm + 6
 			labelRow(px, y, "Dist", fmt.Sprintf("%.3f", cam.distance), cAccent)
 			y += fontSizeSm + 8
@@ -1836,7 +1850,7 @@ func drawRightPanel(sw, sh int32) {
 			txt("No environment loaded", px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 8
 			if btn(px+pad, y, pw-pad*2, btnH, "Load HDRI / Image  ( H )", false, cGold) {
-				if p := openFileDialog(); p != "" {
+				if p := openHDRIDialog(); p != "" {
 					loadHDRI(p)
 				}
 			}
@@ -1852,7 +1866,7 @@ func drawRightPanel(sw, sh int32) {
 	if ui.secRender {
 		slw := pw - pad*2
 		labelRow(px, y, "Resolution",
-			fmt.Sprintf("%d × %d", ui.renderW, ui.renderH), cText)
+			fmt.Sprintf("%d x %d", ui.renderW, ui.renderH), cText)
 		y += fontSizeSm + 8
 
 		// Resolution presets
@@ -1907,6 +1921,7 @@ func drawRightPanel(sw, sh int32) {
 			{"C", "Add camera"}, {"R", "Render"},
 			{".", "Focus"}, {"Del", "Remove"},
 			{"Z", "Cycle shading"}, {"G/A/W", "Grid/Axes/Wire"},
+			{"Arrows/[ ]", "Move/Rotate sel"}, {"-/=", "Scale sel"},
 			{"MMB", "Orbit"}, {"Shift+MMB", "Pan"},
 		}
 		for _, s := range shortcuts {
@@ -1971,7 +1986,7 @@ func drawRenderOutput(sw, sh int32) {
 	rc := getActiveRenderCamera()
 	camName := "Render Output"
 	if rc != nil {
-		camName = rc.name + "  ·  Render Output"
+		camName = rc.name + " | Render Output"
 	}
 	txt(camName, ox+10, oy-headerH-1+(headerH-fontSizeSm)/2, fontSizeSm, cTextBrt)
 
@@ -1987,7 +2002,7 @@ func drawRenderOutput(sw, sh int32) {
 	}
 
 	// Resolution label
-	resLabel := fmt.Sprintf("%d × %d", renderOut.width, renderOut.height)
+	resLabel := fmt.Sprintf("%d x %d", renderOut.width, renderOut.height)
 	rw2 := measure(resLabel, fontSizeSm)
 	txt(resLabel, ox+dispW-rw2-10-(70+58+8), oy-headerH-1+(headerH-fontSizeSm)/2,
 		fontSizeSm, cTextDim)
@@ -2010,7 +2025,7 @@ func drawStats(vp rl.Rectangle) {
 			totalT += o.triCount
 		}
 	}
-	s := fmt.Sprintf("%s · %s · dist %.2f · %dv %dt",
+	s := fmt.Sprintf("%s | %s | dist %.2f | %dv %dt",
 		names[ui.view], proj, cam.distance, totalV, totalT)
 	tw := measure(s, fontSizeSm)
 	bx := int32(vp.X) + pad - 4
@@ -2034,9 +2049,9 @@ func drawBottomBar(sw, sh int32) {
 		}
 		txt(ui.statusMsg, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, tc)
 	} else {
-		hint := "Drop model or HDRI  ·  O = open model  ·  H = load HDRI  ·  C = add camera  ·  R = render"
+		hint := "Drop model or HDRI | O = open model | H = load HDRI | C = add camera | R = render"
 		if len(scene) > 0 {
-			hint = fmt.Sprintf("%d objects  ·  %d cameras  ·  C = add camera  ·  R = render from active camera",
+			hint = fmt.Sprintf("%d objects | %d cameras | C = add camera | R = render from active camera",
 				len(scene), len(cameras))
 		}
 		txt(hint, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
@@ -2049,9 +2064,9 @@ func drawBottomBar(sw, sh int32) {
 	rightX -= tw + 16
 
 	if ui.navMode != NavDefault {
-		modeStr := "● Orbit mode"
+		modeStr := "Orbit mode"
 		if ui.navMode == NavPan {
-			modeStr = "● Pan mode"
+			modeStr = "Pan mode"
 		}
 		mw := measure(modeStr, fontSizeSm)
 		txt(modeStr, rightX-mw, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cAccent)
@@ -2081,14 +2096,14 @@ func handleInput() {
 
 	// Open model
 	if rl.IsKeyPressed(rl.KeyO) {
-		if p := openFileDialog(); p != "" {
+		if p := openModelDialog(); p != "" {
 			addModelToScene(p)
 		}
 	}
 
 	// Load HDRI
 	if rl.IsKeyPressed(rl.KeyH) {
-		if p := openFileDialog(); p != "" {
+		if p := openHDRIDialog(); p != "" {
 			loadHDRI(p)
 		}
 	}
@@ -2129,6 +2144,49 @@ func handleInput() {
 		removeSelected()
 	}
 
+	// Selected object transforms
+	if selObj := getSelectedObject(); selObj != nil {
+		moveStep := float32(0.04)
+		rotStep := float32(1.5)
+		scaleStep := float32(0.02)
+		if rl.IsKeyDown(rl.KeyLeftShift) || rl.IsKeyDown(rl.KeyRightShift) {
+			moveStep = 0.12
+			rotStep = 4.0
+			scaleStep = 0.05
+		}
+
+		if rl.IsKeyDown(rl.KeyLeft) {
+			selObj.position.X -= moveStep
+		}
+		if rl.IsKeyDown(rl.KeyRight) {
+			selObj.position.X += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyUp) {
+			selObj.position.Z -= moveStep
+		}
+		if rl.IsKeyDown(rl.KeyDown) {
+			selObj.position.Z += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyPageUp) {
+			selObj.position.Y += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyPageDown) {
+			selObj.position.Y -= moveStep
+		}
+		if rl.IsKeyDown(rl.KeyLeftBracket) {
+			selObj.rotY -= rotStep
+		}
+		if rl.IsKeyDown(rl.KeyRightBracket) {
+			selObj.rotY += rotStep
+		}
+		if rl.IsKeyDown(rl.KeyMinus) {
+			selObj.userScale = float32(math.Max(float64(selObj.userScale-scaleStep), 0.05))
+		}
+		if rl.IsKeyDown(rl.KeyEqual) {
+			selObj.userScale = float32(math.Min(float64(selObj.userScale+scaleStep), 5.0))
+		}
+	}
+
 	// Numpad view presets
 	if rl.IsKeyPressed(rl.KeyKp1) {
 		if ctrl {
@@ -2166,7 +2224,7 @@ func handleInput() {
 		files := rl.LoadDroppedFiles()
 		for _, f := range files {
 			ext := strings.ToLower(filepath.Ext(f))
-			if ext == ".hdr" {
+			if ext == ".hdr" || ext == ".exr" {
 				loadHDRI(f)
 			} else {
 				addModelToScene(f)
@@ -2220,7 +2278,7 @@ func main() {
 		renderW:        1280,
 		renderH:        720,
 	}
-	setStatus("Welcome — drag & drop models / HDRI, press O for models, H for environment")
+	setStatus("Welcome - drag and drop models / HDRI, press O for models, H for environment")
 
 	for !rl.WindowShouldClose() {
 		sw := int32(rl.GetScreenWidth())

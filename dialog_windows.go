@@ -57,28 +57,18 @@ func utf16Filter(pairs ...string) []uint16 {
 	return out
 }
 
-// openFileDialog opens the Windows "Open File" common dialog and
-// returns the selected path, or "" if the user cancelled.
-func openFileDialog() string {
-	filter := utf16Filter(
-		"3D Models (*.obj;*.fbx;*.gltf;*.glb)", "*.obj;*.fbx;*.gltf;*.glb",
-		"OBJ Files (*.obj)", "*.obj",
-		"FBX Files (*.fbx)", "*.fbx",
-		"GLTF / GLB Files (*.gltf;*.glb)", "*.gltf;*.glb",
-		"All Files (*.*)", "*.*",
-	)
-
-	title, _ := windows.UTF16PtrFromString("Open 3D Model")
+func openDialog(titleText string, filter []uint16) string {
+	title, _ := windows.UTF16PtrFromString(titleText)
 
 	buf := make([]uint16, 512)
 
 	ofn := openFileNameW{
-		lStructSize:  uint32(unsafe.Sizeof(openFileNameW{})),
-		lpstrFilter:  &filter[0],
-		lpstrFile:    &buf[0],
-		nMaxFile:     uint32(len(buf)),
-		lpstrTitle:   title,
-		flags:        ofnFileMustExist | ofnPathMustExist | ofnNoChangeDir,
+		lStructSize: uint32(unsafe.Sizeof(openFileNameW{})),
+		lpstrFilter: &filter[0],
+		lpstrFile:   &buf[0],
+		nMaxFile:    uint32(len(buf)),
+		lpstrTitle:  title,
+		flags:       ofnFileMustExist | ofnPathMustExist | ofnNoChangeDir,
 	}
 
 	ret, _, _ := getOpenFileName.Call(uintptr(unsafe.Pointer(&ofn)))
@@ -86,4 +76,27 @@ func openFileDialog() string {
 		return ""
 	}
 	return windows.UTF16ToString(buf)
+}
+
+func openModelDialog() string {
+	filter := utf16Filter(
+		"3D Models (*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.m3d)", "*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.m3d",
+		"OBJ Files (*.obj)", "*.obj",
+		"FBX Files (*.fbx)", "*.fbx",
+		"GLTF / GLB Files (*.gltf;*.glb)", "*.gltf;*.glb",
+		"IQM Files (*.iqm)", "*.iqm",
+		"M3D Files (*.m3d)", "*.m3d",
+		"All Files (*.*)", "*.*",
+	)
+	return openDialog("Open 3D Model", filter)
+}
+
+func openHDRIDialog() string {
+	filter := utf16Filter(
+		"HDRI / Images (*.hdr;*.exr;*.png;*.jpg;*.jpeg;*.tga)", "*.hdr;*.exr;*.png;*.jpg;*.jpeg;*.tga",
+		"HDR Files (*.hdr;*.exr)", "*.hdr;*.exr",
+		"Image Files (*.png;*.jpg;*.jpeg;*.tga)", "*.png;*.jpg;*.jpeg;*.tga",
+		"All Files (*.*)", "*.*",
+	)
+	return openDialog("Open HDRI / Image", filter)
 }
