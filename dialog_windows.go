@@ -11,6 +11,7 @@ import (
 var (
 	comdlg32        = windows.NewLazySystemDLL("comdlg32.dll")
 	getOpenFileName = comdlg32.NewProc("GetOpenFileNameW")
+	getSaveFileName = comdlg32.NewProc("GetSaveFileNameW")
 )
 
 // OPENFILENAMEW matches the Win32 OPENFILENAMEW layout exactly.
@@ -38,9 +39,10 @@ type openFileNameW struct {
 }
 
 const (
-	ofnFileMustExist = 0x00001000
-	ofnPathMustExist = 0x00000800
-	ofnNoChangeDir   = 0x00000008
+	ofnFileMustExist   = 0x00001000
+	ofnPathMustExist   = 0x00000800
+	ofnNoChangeDir     = 0x00000008
+	ofnOverwritePrompt = 0x00000002
 )
 
 // utf16Filter builds a double-null-terminated UTF-16 filter string
@@ -78,6 +80,28 @@ func openDialog(titleText string, filter []uint16) string {
 	return windows.UTF16ToString(buf)
 }
 
+func saveDialog(titleText string, filter []uint16, defExt string) string {
+	title, _ := windows.UTF16PtrFromString(titleText)
+	buf := make([]uint16, 512)
+	defExtPtr, _ := windows.UTF16PtrFromString(defExt)
+
+	ofn := openFileNameW{
+		lStructSize: uint32(unsafe.Sizeof(openFileNameW{})),
+		lpstrFilter: &filter[0],
+		lpstrFile:   &buf[0],
+		nMaxFile:    uint32(len(buf)),
+		lpstrTitle:  title,
+		lpstrDefExt: defExtPtr,
+		flags:       ofnPathMustExist | ofnNoChangeDir | ofnOverwritePrompt,
+	}
+
+	ret, _, _ := getSaveFileName.Call(uintptr(unsafe.Pointer(&ofn)))
+	if ret == 0 {
+		return ""
+	}
+	return windows.UTF16ToString(buf)
+}
+
 func openModelDialog() string {
 	filter := utf16Filter(
 		"3D Models (*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.m3d)", "*.obj;*.fbx;*.gltf;*.glb;*.iqm;*.m3d",
@@ -99,4 +123,22 @@ func openHDRIDialog() string {
 		"All Files (*.*)", "*.*",
 	)
 	return openDialog("Open HDRI / Image", filter)
+}
+
+func openSceneDialog() string {
+	filter := utf16Filter(
+		"Render Zero Scene (*.rzs)", "*.rzs",
+		"JSON Files (*.json)", "*.json",
+		"All Files (*.*)", "*.*",
+	)
+	return openDialog("Load Scene", filter)
+}
+
+func saveSceneDialog() string {
+	filter := utf16Filter(
+		"Render Zero Scene (*.rzs)", "*.rzs",
+		"JSON Files (*.json)", "*.json",
+		"All Files (*.*)", "*.*",
+	)
+	return saveDialog("Save Scene", filter, "rzs")
 }

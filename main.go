@@ -30,8 +30,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"unsafe"
@@ -41,21 +43,22 @@ import (
 
 // ── Layout constants ──────────────────────────────────────────
 const (
-	topbarH     = int32(42)
-	bottombarH  = int32(26)
-	panelRW     = int32(300)
-	outlineW    = int32(224)
-	fontSize    = int32(16)
-	fontSizeSm  = int32(14)
-	fontSizeLg  = int32(20)
-	fontSizeXL  = int32(24)
-	pad         = int32(10)
-	btnH        = int32(28)
-	gizmoSize   = float32(68)
-	gizmoMargin = float32(18)
-	navBtnW     = int32(62)
-	navBtnH     = int32(32)
-	rowH        = int32(26)
+	topbarH        = int32(42)
+	bottombarH     = int32(26)
+	panelRW        = int32(300)
+	outlineW       = int32(224)
+	fontSize       = int32(16)
+	fontSizeSm     = int32(14)
+	fontSizeLg     = int32(20)
+	fontSizeXL     = int32(24)
+	pad            = int32(10)
+	btnH           = int32(28)
+	gizmoSize      = float32(68)
+	gizmoMargin    = float32(18)
+	navBtnW        = int32(62)
+	navBtnH        = int32(32)
+	rowH           = int32(26)
+	maxPointLights = 4
 )
 
 // ── Palette ───────────────────────────────────────────────────
@@ -121,6 +124,7 @@ type SceneItemType int
 const (
 	ItemMesh SceneItemType = iota
 	ItemCamera
+	ItemLight
 )
 
 // ── Structs ───────────────────────────────────────────────────
@@ -143,6 +147,7 @@ type SceneObject struct {
 	loaded      bool
 	name        string
 	ext         string
+	sourcePath  string
 	bounds      rl.BoundingBox
 	center      rl.Vector3
 	scaleFactor float32
@@ -165,9 +170,20 @@ type RenderCamera struct {
 	active   bool // designated render camera
 }
 
+type SceneLight struct {
+	id        int
+	name      string
+	position  rl.Vector3
+	color     rl.Color
+	intensity float32
+	rangeDist float32
+	enabled   bool
+}
+
 type HDRIState struct {
 	loaded          bool
 	name            string
+	sourcePath      string
 	panorama        rl.Texture2D
 	skyboxModel     rl.Model
 	skyboxShader    rl.Shader
@@ -184,6 +200,72 @@ type RenderOutput struct {
 	height     int32
 	rendered   bool
 	showOutput bool
+}
+
+type SavedOrbitCam struct {
+	Target    [3]float32 `json:"target"`
+	Azimuth   float32    `json:"azimuth"`
+	Elevation float32    `json:"elevation"`
+	Distance  float32    `json:"distance"`
+	Fovy      float32    `json:"fovy"`
+	Ortho     bool       `json:"ortho"`
+}
+
+type SavedSceneObject struct {
+	Path     string     `json:"path"`
+	Name     string     `json:"name"`
+	Position [3]float32 `json:"position"`
+	RotY     float32    `json:"rotY"`
+	Scale    float32    `json:"scale"`
+	Visible  bool       `json:"visible"`
+}
+
+type SavedRenderCamera struct {
+	Name     string     `json:"name"`
+	Position [3]float32 `json:"position"`
+	Target   [3]float32 `json:"target"`
+	Fovy     float32    `json:"fovy"`
+	Active   bool       `json:"active"`
+}
+
+type SavedSceneLight struct {
+	Name      string     `json:"name"`
+	Position  [3]float32 `json:"position"`
+	Color     [4]uint8   `json:"color"`
+	Intensity float32    `json:"intensity"`
+	RangeDist float32    `json:"range"`
+	Enabled   bool       `json:"enabled"`
+}
+
+type SavedEnvironment struct {
+	Path      string  `json:"path"`
+	Intensity float32 `json:"intensity"`
+	Rotation  float32 `json:"rotation"`
+	UseIBL    bool    `json:"useIBL"`
+	IsLoaded  bool    `json:"isLoaded"`
+}
+
+type SavedRenderSettings struct {
+	Width   int32   `json:"width"`
+	Height  int32   `json:"height"`
+	LightAz float32 `json:"lightAz"`
+	LightEl float32 `json:"lightEl"`
+	Ambient float32 `json:"ambient"`
+	Shading int     `json:"shading"`
+	Grid    bool    `json:"grid"`
+	Axes    bool    `json:"axes"`
+	Wire    bool    `json:"wire"`
+	Stats   bool    `json:"stats"`
+}
+
+type SavedSceneFile struct {
+	Version     int                 `json:"version"`
+	Orbit       SavedOrbitCam       `json:"orbit"`
+	Objects     []SavedSceneObject  `json:"objects"`
+	Cameras     []SavedRenderCamera `json:"cameras"`
+	Lights      []SavedSceneLight   `json:"lights"`
+	Environment SavedEnvironment    `json:"environment"`
+	Render      SavedRenderSettings `json:"render"`
 }
 
 type UIState struct {
@@ -253,6 +335,8 @@ uniform sampler2D uEnvPano;
 uniform float     uUseHDRI;
 uniform float     uEnvIntensity;
 uniform float     uEnvRotation;
+uniform vec4      uPointLightPosIntensity[4];
+uniform vec4      uPointLightColorRange[4];
 out vec4 fragColor;
 vec2 dirToUV(vec3 d) {
     float s = sin(uEnvRotation), c = cos(uEnvRotation);
@@ -270,8 +354,25 @@ void main() {
     vec3  H    = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 48.0) * 0.25;
     float amb  = uAmbient;
+    vec3  pointLit = vec3(0.0);
     vec3  envDiff = vec3(0.0);
     vec3  envSpec = vec3(0.0);
+    for (int i = 0; i < 4; i++) {
+        vec3  lightPos = uPointLightPosIntensity[i].xyz;
+        float lightIntensity = uPointLightPosIntensity[i].w;
+        float lightRange = uPointLightColorRange[i].w;
+        if (lightIntensity <= 0.001 || lightRange <= 0.001) continue;
+        vec3 toL = lightPos - vPos;
+        float dist = length(toL);
+        if (dist >= lightRange) continue;
+        vec3 Lp = toL / max(dist, 0.0001);
+        float atten = 1.0 - dist/lightRange;
+        atten *= atten;
+        float pdiff = max(dot(N, Lp), 0.0) * lightIntensity * atten;
+        vec3 Hp = normalize(Lp + V);
+        float pspec = pow(max(dot(N, Hp), 0.0), 24.0) * 0.18 * lightIntensity * atten;
+        pointLit += (pdiff + pspec) * uPointLightColorRange[i].rgb;
+    }
     if (uUseHDRI > 0.5) {
         vec3  envN = texture(uEnvPano, dirToUV(N)).rgb * uEnvIntensity;
         vec3  envR = texture(uEnvPano, dirToUV(reflect(-V, N))).rgb * uEnvIntensity;
@@ -279,7 +380,7 @@ void main() {
         envSpec = envR / (envR + vec3(1.0));
         amb = max(uAmbient, 0.06 + uEnvIntensity * 0.10);
     }
-    vec3 lit = (amb + diff) * uLightColor + spec * uLightColor + envDiff * 0.45 + envSpec * 0.30;
+    vec3 lit = (amb + diff) * uLightColor + spec * uLightColor + pointLit + envDiff * 0.45 + envSpec * 0.30;
     fragColor = vec4(clamp(lit, 0.0, 1.0) * tex.rgb, tex.a);
 }`
 
@@ -317,10 +418,12 @@ var (
 	cam             OrbitCam
 	scene           []SceneObject
 	cameras         []RenderCamera
+	lights          []SceneLight
 	nextID          = 1
 	ui              UIState
 	hdri            HDRIState
 	renderOut       RenderOutput
+	sceneLoadActive bool
 	shd             rl.Shader
 	locLightDir     int32
 	locLightColor   int32
@@ -331,6 +434,8 @@ var (
 	locUseHDRI      int32
 	locEnvIntensity int32
 	locEnvRotation  int32
+	locPointPos     [4]int32
+	locPointColor   [4]int32
 )
 
 // ── Font helpers ──────────────────────────────────────────────
@@ -469,6 +574,18 @@ func getSelectedCamera() *RenderCamera {
 	return nil
 }
 
+func getSelectedLight() *SceneLight {
+	if ui.selectedType != ItemLight {
+		return nil
+	}
+	for i := range lights {
+		if lights[i].id == ui.selectedID {
+			return &lights[i]
+		}
+	}
+	return nil
+}
+
 func getActiveRenderCamera() *RenderCamera {
 	for i := range cameras {
 		if cameras[i].active {
@@ -479,6 +596,22 @@ func getActiveRenderCamera() *RenderCamera {
 		return &cameras[0]
 	}
 	return nil
+}
+
+func vec3ToArray(v rl.Vector3) [3]float32 {
+	return [3]float32{v.X, v.Y, v.Z}
+}
+
+func arrayToVec3(v [3]float32) rl.Vector3 {
+	return rl.Vector3{X: v[0], Y: v[1], Z: v[2]}
+}
+
+func colorToArray(c rl.Color) [4]uint8 {
+	return [4]uint8{c.R, c.G, c.B, c.A}
+}
+
+func arrayToColor(c [4]uint8) rl.Color {
+	return rl.Color{R: c[0], G: c[1], B: c[2], A: c[3]}
 }
 
 // ── Orbit camera ─────────────────────────────────────────────
@@ -646,6 +779,10 @@ func shaderInit() {
 	locUseHDRI = rl.GetShaderLocation(shd, "uUseHDRI")
 	locEnvIntensity = rl.GetShaderLocation(shd, "uEnvIntensity")
 	locEnvRotation = rl.GetShaderLocation(shd, "uEnvRotation")
+	for i := 0; i < maxPointLights; i++ {
+		locPointPos[i] = rl.GetShaderLocation(shd, fmt.Sprintf("uPointLightPosIntensity[%d]", i))
+		locPointColor[i] = rl.GetShaderLocation(shd, fmt.Sprintf("uPointLightColorRange[%d]", i))
+	}
 
 	setShaderLoc(&shd, rl.ShaderLocMatrixModel, locMatModel)
 	setShaderLoc(&shd, rl.ShaderLocVectorView, locViewPos)
@@ -684,6 +821,35 @@ func shaderUpdate(c rl.Camera3D) {
 	rl.SetShaderValue(shd, locUseHDRI, []float32{useHDRI}, rl.ShaderUniformFloat)
 	rl.SetShaderValue(shd, locEnvIntensity, []float32{intensity}, rl.ShaderUniformFloat)
 	rl.SetShaderValue(shd, locEnvRotation, []float32{rotation}, rl.ShaderUniformFloat)
+
+	var pointPos [maxPointLights * 4]float32
+	var pointColor [maxPointLights * 4]float32
+	lightIndex := 0
+	for i := range lights {
+		if lightIndex >= maxPointLights {
+			break
+		}
+		l := lights[i]
+		if !l.enabled {
+			continue
+		}
+		base := lightIndex * 4
+		pointPos[base+0] = l.position.X
+		pointPos[base+1] = l.position.Y
+		pointPos[base+2] = l.position.Z
+		pointPos[base+3] = l.intensity
+		pointColor[base+0] = float32(l.color.R) / 255.0
+		pointColor[base+1] = float32(l.color.G) / 255.0
+		pointColor[base+2] = float32(l.color.B) / 255.0
+		pointColor[base+3] = l.rangeDist
+		lightIndex++
+	}
+	if locPointPos[0] >= 0 {
+		rl.SetShaderValueV(shd, locPointPos[0], pointPos[:], rl.ShaderUniformVec4, int32(maxPointLights))
+	}
+	if locPointColor[0] >= 0 {
+		rl.SetShaderValueV(shd, locPointColor[0], pointColor[:], rl.ShaderUniformVec4, int32(maxPointLights))
+	}
 }
 
 // ── HDRI system ───────────────────────────────────────────────
@@ -706,6 +872,7 @@ func unloadHDRI() {
 	hdri.skyboxModel = rl.Model{}
 	hdri.loaded = false
 	hdri.name = ""
+	hdri.sourcePath = ""
 }
 
 func loadHDRI(path string) bool {
@@ -760,6 +927,7 @@ func loadHDRI(path string) bool {
 
 	hdri.loaded = true
 	hdri.name = filepath.Base(path)
+	hdri.sourcePath = path
 	setStatus("Environment loaded: %s", hdri.name)
 	return true
 }
@@ -835,6 +1003,7 @@ func addModelToScene(path string) bool {
 		loaded:      true,
 		name:        name,
 		ext:         ext,
+		sourcePath:  path,
 		bounds:      bb,
 		center:      center,
 		scaleFactor: sf,
@@ -856,7 +1025,7 @@ func addModelToScene(path string) bool {
 	ui.selectedID = obj.id
 	ui.selectedType = ItemMesh
 
-	if len(scene) == 1 {
+	if len(scene) == 1 && !sceneLoadActive {
 		camFocusAll()
 	}
 	setStatus("Added %s  (%d meshes, %d verts, %d tris)", base, mc, vc, tc)
@@ -883,6 +1052,15 @@ func removeSelected() {
 				return
 			}
 		}
+	} else if ui.selectedType == ItemLight {
+		for i := range lights {
+			if lights[i].id == ui.selectedID {
+				lights = append(lights[:i], lights[i+1:]...)
+				ui.selectedID = -1
+				setStatus("Light removed")
+				return
+			}
+		}
 	}
 }
 
@@ -902,6 +1080,254 @@ func addRenderCamera() {
 	ui.selectedID = rc.id
 	ui.selectedType = ItemCamera
 	setStatus("Added %s at viewport position", name)
+}
+
+func addSceneLight() {
+	c := camGet()
+	dir := rl.Vector3Normalize(rl.Vector3Subtract(c.Target, c.Position))
+	pos := rl.Vector3Add(c.Target, rl.Vector3Scale(dir, -1.5))
+	name := fmt.Sprintf("Light.%03d", nextID)
+	light := SceneLight{
+		id:        nextID,
+		name:      name,
+		position:  pos,
+		color:     rl.Color{R: 255, G: 236, B: 214, A: 255},
+		intensity: 1.8,
+		rangeDist: 8.0,
+		enabled:   true,
+	}
+	lights = append(lights, light)
+	nextID++
+	ui.selectedID = light.id
+	ui.selectedType = ItemLight
+	setStatus("Added %s", name)
+}
+
+func clearScene() {
+	for i := range scene {
+		if scene[i].loaded {
+			rl.UnloadModel(scene[i].model)
+		}
+	}
+	scene = nil
+	cameras = nil
+	lights = nil
+	unloadHDRI()
+	ui.selectedID = -1
+	ui.selectedType = ItemMesh
+	renderOut.rendered = false
+	renderOut.showOutput = false
+	nextID = 1
+}
+
+func saveSceneToPath(path string) error {
+	data := SavedSceneFile{
+		Version: 1,
+		Orbit: SavedOrbitCam{
+			Target:    vec3ToArray(cam.target),
+			Azimuth:   cam.azimuth,
+			Elevation: cam.elevation,
+			Distance:  cam.distance,
+			Fovy:      cam.fovy,
+			Ortho:     cam.ortho,
+		},
+		Render: SavedRenderSettings{
+			Width:   ui.renderW,
+			Height:  ui.renderH,
+			LightAz: ui.lightAz,
+			LightEl: ui.lightEl,
+			Ambient: ui.ambient,
+			Shading: int(ui.shading),
+			Grid:    ui.grid,
+			Axes:    ui.axes,
+			Wire:    ui.wireOver,
+			Stats:   ui.stats,
+		},
+		Environment: SavedEnvironment{
+			Path:      hdri.sourcePath,
+			Intensity: hdri.intensity,
+			Rotation:  hdri.skyRotation,
+			UseIBL:    hdri.useIBL,
+			IsLoaded:  hdri.loaded,
+		},
+	}
+	for _, obj := range scene {
+		data.Objects = append(data.Objects, SavedSceneObject{
+			Path:     obj.sourcePath,
+			Name:     obj.name,
+			Position: vec3ToArray(obj.position),
+			RotY:     obj.rotY,
+			Scale:    obj.userScale,
+			Visible:  obj.visible,
+		})
+	}
+	for _, rc := range cameras {
+		data.Cameras = append(data.Cameras, SavedRenderCamera{
+			Name:     rc.name,
+			Position: vec3ToArray(rc.position),
+			Target:   vec3ToArray(rc.target),
+			Fovy:     rc.fovy,
+			Active:   rc.active,
+		})
+	}
+	for _, l := range lights {
+		data.Lights = append(data.Lights, SavedSceneLight{
+			Name:      l.name,
+			Position:  vec3ToArray(l.position),
+			Color:     colorToArray(l.color),
+			Intensity: l.intensity,
+			RangeDist: l.rangeDist,
+			Enabled:   l.enabled,
+		})
+	}
+	buf, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf, 0644)
+}
+
+func loadSceneFromPath(path string) error {
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var data SavedSceneFile
+	if err := json.Unmarshal(buf, &data); err != nil {
+		return err
+	}
+
+	clearScene()
+	sceneLoadActive = true
+	defer func() { sceneLoadActive = false }()
+
+	ui.renderW = data.Render.Width
+	ui.renderH = data.Render.Height
+	ui.lightAz = data.Render.LightAz
+	ui.lightEl = data.Render.LightEl
+	ui.ambient = data.Render.Ambient
+	ui.shading = ShadingMode(data.Render.Shading)
+	ui.grid = data.Render.Grid
+	ui.axes = data.Render.Axes
+	ui.wireOver = data.Render.Wire
+	ui.stats = data.Render.Stats
+
+	cam.target = arrayToVec3(data.Orbit.Target)
+	cam.azimuth = data.Orbit.Azimuth
+	cam.elevation = data.Orbit.Elevation
+	cam.distance = data.Orbit.Distance
+	cam.fovy = data.Orbit.Fovy
+	cam.ortho = data.Orbit.Ortho
+
+	var missing []string
+	for _, so := range data.Objects {
+		if so.Path == "" {
+			continue
+		}
+		if !addModelToScene(so.Path) {
+			missing = append(missing, filepath.Base(so.Path))
+			continue
+		}
+		obj := &scene[len(scene)-1]
+		if so.Name != "" {
+			obj.name = so.Name
+		}
+		obj.position = arrayToVec3(so.Position)
+		obj.rotY = so.RotY
+		if so.Scale > 0 {
+			obj.userScale = so.Scale
+		}
+		obj.visible = so.Visible
+	}
+	for _, sc := range data.Cameras {
+		name := sc.Name
+		if name == "" {
+			name = fmt.Sprintf("Camera.%03d", nextID)
+		}
+		rc := RenderCamera{
+			id:       nextID,
+			name:     name,
+			position: arrayToVec3(sc.Position),
+			target:   arrayToVec3(sc.Target),
+			fovy:     sc.Fovy,
+			active:   sc.Active,
+		}
+		if rc.fovy <= 0 {
+			rc.fovy = 50
+		}
+		cameras = append(cameras, rc)
+		nextID++
+	}
+	if len(cameras) > 0 {
+		hasActive := false
+		for i := range cameras {
+			if cameras[i].active {
+				hasActive = true
+				break
+			}
+		}
+		if !hasActive {
+			cameras[0].active = true
+		}
+	}
+	for _, sl := range data.Lights {
+		name := sl.Name
+		if name == "" {
+			name = fmt.Sprintf("Light.%03d", nextID)
+		}
+		light := SceneLight{
+			id:        nextID,
+			name:      name,
+			position:  arrayToVec3(sl.Position),
+			color:     arrayToColor(sl.Color),
+			intensity: sl.Intensity,
+			rangeDist: sl.RangeDist,
+			enabled:   sl.Enabled,
+		}
+		if light.color.A == 0 {
+			light.color.A = 255
+		}
+		if light.rangeDist <= 0 {
+			light.rangeDist = 8
+		}
+		lights = append(lights, light)
+		nextID++
+	}
+	if data.Environment.IsLoaded && data.Environment.Path != "" {
+		if !loadHDRI(data.Environment.Path) {
+			missing = append(missing, filepath.Base(data.Environment.Path))
+		} else {
+			hdri.intensity = data.Environment.Intensity
+			hdri.skyRotation = data.Environment.Rotation
+			hdri.useIBL = data.Environment.UseIBL
+		}
+	}
+	ui.selectedID = -1
+	ui.selectedType = ItemMesh
+	if len(missing) > 0 {
+		setStatus("Scene loaded with missing assets: %s", strings.Join(missing, ", "))
+	} else {
+		setStatus("Scene loaded: %s", filepath.Base(path))
+	}
+	return nil
+}
+
+func saveScene() {
+	if path := saveSceneDialog(); path != "" {
+		if err := saveSceneToPath(path); err != nil {
+			setStatus("Scene save failed: %v", err)
+			return
+		}
+		setStatus("Scene saved: %s", filepath.Base(path))
+	}
+}
+
+func loadScene() {
+	if path := openSceneDialog(); path != "" {
+		if err := loadSceneFromPath(path); err != nil {
+			setStatus("Scene load failed: %v", err)
+		}
+	}
 }
 
 func modelMesh(m rl.Model, i int) *rl.Mesh {
@@ -1054,6 +1480,19 @@ func drawSceneGeometry(shading ShadingMode, wireOver bool, showSelection bool) {
 			tip := rl.Vector3Add(rc.position, rl.Vector3Scale(dir, 0.45))
 			rl.DrawLine3D(rc.position, tip, col)
 			rl.DrawSphereWires(rc.position, 0.055, 4, 4, col)
+		}
+		for i := range lights {
+			l := &lights[i]
+			col := l.color
+			if !l.enabled {
+				col = cTextDim
+			}
+			if ui.selectedType == ItemLight && ui.selectedID == l.id {
+				col = cAccent
+			}
+			rl.DrawSphere(l.position, 0.10, rl.Color{R: col.R, G: col.G, B: col.B, A: 180})
+			rl.DrawSphereWires(l.position, 0.14, 6, 6, col)
+			rl.DrawLine3D(l.position, rl.Vector3Add(l.position, rl.Vector3{Y: 0.5}), col)
 		}
 	}
 }
@@ -1382,8 +1821,8 @@ func drawOutliner(sh int32) {
 	txt("Scene", x+10, y+(btnH-fontSize)/2, fontSize, cTextBrt)
 
 	// Quick-add buttons (right side of header)
-	bw2 := int32(28)
-	bx := x + w - bw2*2 - 8
+	bw2 := int32(26)
+	bx := x + w - bw2*3 - 10
 	if btn(bx, y+4, bw2, btnH-8, "+Obj", false, cAccent) {
 		if p := openModelDialog(); p != "" {
 			addModelToScene(p)
@@ -1392,6 +1831,10 @@ func drawOutliner(sh int32) {
 	bx += bw2 + 2
 	if btn(bx, y+4, bw2, btnH-8, "+Cam", false, cGold) {
 		addRenderCamera()
+	}
+	bx += bw2 + 2
+	if btn(bx, y+4, bw2, btnH-8, "+Lit", false, cGreen) {
+		addSceneLight()
 	}
 
 	y += btnH + 1
@@ -1517,8 +1960,53 @@ func drawOutliner(sh int32) {
 		}
 	}
 
+	if len(lights) > 0 {
+		iy += 4
+		txt("LIGHTS", x+10, iy+4, fontSizeSm-2, cTextDim)
+		iy += fontSizeSm + 6
+		for i := range lights {
+			l := &lights[i]
+			isSel := ui.selectedType == ItemLight && ui.selectedID == l.id
+			rowY := iy
+			if isSel {
+				roundRect(x, rowY, w-1, rowH, 0.15, cSelRow)
+				rl.DrawLine(x, rowY, x, rowY+rowH, cAccent)
+			}
+			mp := rl.GetMousePosition()
+			rr := rl.Rectangle{X: float32(x), Y: float32(rowY), Width: float32(w - 1), Height: float32(rowH)}
+			hov := rl.CheckCollisionPointRec(mp, rr)
+			if hov && !isSel {
+				rl.DrawRectangleRec(rr, rl.Color{R: 50, G: 50, B: 50, A: 120})
+			}
+			if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+				ui.selectedID = l.id
+				ui.selectedType = ItemLight
+			}
+
+			vc := cTextDim
+			if l.enabled {
+				vc = cGreen
+			}
+			rl.DrawCircle(x+14, rowY+rowH/2, 4, vc)
+			vr := rl.Rectangle{X: float32(x + 7), Y: float32(rowY + rowH/2 - 6), Width: 14, Height: 14}
+			if rl.CheckCollisionPointRec(mp, vr) && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+				l.enabled = !l.enabled
+			}
+
+			txt("L", x+24, rowY+(rowH-fontSizeSm)/2, fontSizeSm,
+				rl.Color{R: cGreen.R, G: cGreen.G, B: cGreen.B, A: 200})
+			nameCol := cText
+			if isSel {
+				nameCol = cAccent
+			}
+			txt(l.name, x+40, rowY+(rowH-fontSizeSm)/2, fontSizeSm, nameCol)
+			rl.DrawLine(x+8, rowY+rowH, x+w-8, rowY+rowH, cBorderLo)
+			iy += rowH
+		}
+	}
+
 	// Empty scene hint
-	if len(scene) == 0 && len(cameras) == 0 {
+	if len(scene) == 0 && len(cameras) == 0 && len(lights) == 0 {
 		iy += 12
 		txtC("Drop a model here", x+w/2, iy, fontSizeSm, cTextDim)
 		iy += fontSizeSm + 6
@@ -1563,6 +2051,21 @@ func drawTopBar(sw int32) {
 		addRenderCamera()
 	}
 	x += 56
+
+	if btn(x, 6, 56, topbarH-12, "+Light", false, cGreen) {
+		addSceneLight()
+	}
+	x += 60
+
+	if btn(x, 6, 58, topbarH-12, "LoadScn", false, cPurple) {
+		loadScene()
+	}
+	x += 62
+
+	if btn(x, 6, 58, topbarH-12, "SaveScn", false, cPurple) {
+		saveScene()
+	}
+	x += 62
 
 	rl.DrawLine(x, 8, x, topbarH-8, cBorder)
 	x += 10
@@ -1621,10 +2124,13 @@ func drawTopBar(sw int32) {
 	}
 
 	// Center: scene info pill
-	if len(scene) > 0 {
+	if len(scene) > 0 || len(cameras) > 0 || len(lights) > 0 || hdri.loaded {
 		info := fmt.Sprintf("%d objects", len(scene))
 		if len(cameras) > 0 {
 			info += fmt.Sprintf(" | %d cameras", len(cameras))
+		}
+		if len(lights) > 0 {
+			info += fmt.Sprintf(" | %d lights", len(lights))
 		}
 		if hdri.loaded {
 			info += " | HDR"
@@ -1654,6 +2160,7 @@ func drawRightPanel(sw, sh int32) {
 	// ── Object / Camera section ──────────────────────────────
 	selObj := getSelectedObject()
 	selCam := getSelectedCamera()
+	selLight := getSelectedLight()
 
 	sectionHeader(px, y, pw, "Object", &ui.secObject)
 	y += btnH + 2
@@ -1690,8 +2197,29 @@ func drawRightPanel(sw, sh int32) {
 			}
 			labelRow(px, y, "Active", isActive, cGreen)
 			y += fontSizeSm + 8
+		} else if selLight != nil {
+			labelRow(px, y, "Name", selLight.name, cText)
+			y += fontSizeSm + 6
+			state := "Off"
+			if selLight.enabled {
+				state = "On"
+			}
+			labelRow(px, y, "Enabled", state, cGreen)
+			y += fontSizeSm + 6
+			labelRow(px, y, "Intensity", fmt.Sprintf("%.2f", selLight.intensity), cAccent)
+			y += fontSizeSm + 6
+			labelRow(px, y, "Range", fmt.Sprintf("%.2f", selLight.rangeDist), cAccent)
+			y += fontSizeSm + 8
+			bw2 := (pw - pad*3) / 2
+			if btn(px+pad, y, bw2, btnH, "Enabled", selLight.enabled, cGreen) {
+				selLight.enabled = !selLight.enabled
+			}
+			if btn(px+pad+bw2+pad, y, bw2, btnH, "Focus", false, cAccent) {
+				cam.target = selLight.position
+			}
+			y += btnH + 4
 		} else {
-			txt(fmt.Sprintf("%d objects | %d cameras", len(scene), len(cameras)),
+			txt(fmt.Sprintf("%d objects | %d cameras | %d lights", len(scene), len(cameras), len(lights)),
 				px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 6
 			if btn(px+pad, y, pw-pad*2, btnH, "Focus All  ( . )", false, cAccent) {
@@ -1770,6 +2298,19 @@ func drawRightPanel(sw, sh int32) {
 				performRender()
 			}
 			y += btnH + 8
+		} else if selLight != nil {
+			slider(px+pad, y, slw, "Position X", &selLight.position.X, -8, 8)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Position Y", &selLight.position.Y, -8, 8)
+			y += fontSizeSm + 18
+			slider(px+pad, y, slw, "Position Z", &selLight.position.Z, -8, 8)
+			y += fontSizeSm + 18
+			if btn(px+pad, y, pw-pad*2, btnH, "Reset Position", false, cPurple) {
+				selLight.position = rl.Vector3{}
+			}
+			y += btnH + 8
+			txt("Arrows move light | PgUp/PgDn move Y", px+pad, y, fontSizeSm, cTextDim)
+			y += fontSizeSm + 8
 		} else {
 			labelRow(px, y, "Az", fmt.Sprintf("%.1f deg", cam.azimuth*180/math.Pi), cAccent)
 			y += fontSizeSm + 6
@@ -1815,12 +2356,35 @@ func drawRightPanel(sw, sh int32) {
 	y += btnH + 2
 	if ui.secLighting {
 		slw := pw - pad*2
+		if btn(px+pad, y, pw-pad*2, btnH, "Add Light", false, cGreen) {
+			addSceneLight()
+		}
+		y += btnH + 6
 		slider(px+pad, y, slw, "Light Azimuth", &ui.lightAz, -math.Pi, math.Pi)
 		y += fontSizeSm + 20
 		slider(px+pad, y, slw, "Light Elevation", &ui.lightEl, -math.Pi/2, math.Pi/2)
 		y += fontSizeSm + 20
 		slider(px+pad, y, slw, "Ambient", &ui.ambient, 0, 1)
 		y += fontSizeSm + 20
+		if selLight != nil {
+			slider(px+pad, y, slw, "Intensity", &selLight.intensity, 0, 8)
+			y += fontSizeSm + 20
+			slider(px+pad, y, slw, "Range", &selLight.rangeDist, 0.5, 20)
+			y += fontSizeSm + 20
+			rv := float32(selLight.color.R) / 255.0
+			gv := float32(selLight.color.G) / 255.0
+			bv := float32(selLight.color.B) / 255.0
+			slider(px+pad, y, slw, "Color R", &rv, 0, 1)
+			selLight.color.R = uint8(clamp32(rv, 0, 1) * 255)
+			y += fontSizeSm + 20
+			slider(px+pad, y, slw, "Color G", &gv, 0, 1)
+			selLight.color.G = uint8(clamp32(gv, 0, 1) * 255)
+			y += fontSizeSm + 20
+			slider(px+pad, y, slw, "Color B", &bv, 0, 1)
+			selLight.color.B = uint8(clamp32(bv, 0, 1) * 255)
+			selLight.color.A = 255
+			y += fontSizeSm + 20
+		}
 	}
 	rl.DrawLine(px, y, px+pw, y, cBorderLo)
 	y += 6
@@ -1918,7 +2482,8 @@ func drawRightPanel(sw, sh int32) {
 		type sc struct{ k, v string }
 		shortcuts := []sc{
 			{"O", "Open model"}, {"H", "Load HDRI"},
-			{"C", "Add camera"}, {"R", "Render"},
+			{"C", "Add camera"}, {"L", "Add light"},
+			{"Ctrl+S/L", "Save/Load scene"}, {"R", "Render"},
 			{".", "Focus"}, {"Del", "Remove"},
 			{"Z", "Cycle shading"}, {"G/A/W", "Grid/Axes/Wire"},
 			{"Arrows/[ ]", "Move/Rotate sel"}, {"-/=", "Scale sel"},
@@ -2049,10 +2614,10 @@ func drawBottomBar(sw, sh int32) {
 		}
 		txt(ui.statusMsg, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, tc)
 	} else {
-		hint := "Drop model or HDRI | O = open model | H = load HDRI | C = add camera | R = render"
+		hint := "Drop model or HDRI | O = model | H = HDRI | C = camera | L = light | Ctrl+S/L = scene save/load"
 		if len(scene) > 0 {
-			hint = fmt.Sprintf("%d objects | %d cameras | C = add camera | R = render from active camera",
-				len(scene), len(cameras))
+			hint = fmt.Sprintf("%d objects | %d cameras | %d lights | R = render from active camera",
+				len(scene), len(cameras), len(lights))
 		}
 		txt(hint, pad, y+(bottombarH-fontSizeSm)/2, fontSizeSm, cTextDim)
 	}
@@ -2101,6 +2666,13 @@ func handleInput() {
 		}
 	}
 
+	if ctrl && rl.IsKeyPressed(rl.KeyS) {
+		saveScene()
+	}
+	if ctrl && rl.IsKeyPressed(rl.KeyL) {
+		loadScene()
+	}
+
 	// Load HDRI
 	if rl.IsKeyPressed(rl.KeyH) {
 		if p := openHDRIDialog(); p != "" {
@@ -2111,6 +2683,9 @@ func handleInput() {
 	// Add camera
 	if rl.IsKeyPressed(rl.KeyC) {
 		addRenderCamera()
+	}
+	if rl.IsKeyPressed(rl.KeyL) && !ctrl {
+		addSceneLight()
 	}
 
 	// Render
@@ -2184,6 +2759,29 @@ func handleInput() {
 		}
 		if rl.IsKeyDown(rl.KeyEqual) {
 			selObj.userScale = float32(math.Min(float64(selObj.userScale+scaleStep), 5.0))
+		}
+	} else if selLight := getSelectedLight(); selLight != nil {
+		moveStep := float32(0.05)
+		if rl.IsKeyDown(rl.KeyLeftShift) || rl.IsKeyDown(rl.KeyRightShift) {
+			moveStep = 0.12
+		}
+		if rl.IsKeyDown(rl.KeyLeft) {
+			selLight.position.X -= moveStep
+		}
+		if rl.IsKeyDown(rl.KeyRight) {
+			selLight.position.X += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyUp) {
+			selLight.position.Z -= moveStep
+		}
+		if rl.IsKeyDown(rl.KeyDown) {
+			selLight.position.Z += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyPageUp) {
+			selLight.position.Y += moveStep
+		}
+		if rl.IsKeyDown(rl.KeyPageDown) {
+			selLight.position.Y -= moveStep
 		}
 	}
 
