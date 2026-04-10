@@ -449,12 +449,17 @@ var (
 )
 
 var (
-	activeNumField    string
-	activeNumText     string
-	activeNumTarget   *float32
-	activeNumMin      float32
-	activeNumMax      float32
-	activeNumOriginal float32
+	activeFieldID     string
+	activeFieldText   string
+	activeFieldKind   int
+	activeFloatTarget *float32
+	activeByteTarget  *uint8
+	activeLightTarget *SceneLight
+	activeFieldMin    float32
+	activeFieldMax    float32
+	activeFloatOrig   float32
+	activeByteOrig    uint8
+	activeLightOrig   rl.Color
 )
 
 func loadFontAt(path string, size int32) (rl.Font, bool) {
@@ -523,6 +528,14 @@ func fmtNum(v float32) string {
 	return s
 }
 
+func fmtByte(v uint8) string {
+	return strconv.Itoa(int(v))
+}
+
+func fmtHex(c rl.Color) string {
+	return fmt.Sprintf("#%02X%02X%02X", c.R, c.G, c.B)
+}
+
 func measure(s string, sz int32) int32 {
 	if gFontLoaded {
 		return int32(rl.MeasureTextEx(fontFor(sz), s, float32(sz), 1.0).X)
@@ -536,40 +549,119 @@ func setStatus(f string, a ...any) {
 	ui.statusTimer = 4.0
 }
 
-func beginNumberEdit(id string, target *float32, lo, hi float32) {
-	if activeNumField != "" && activeNumField != id {
-		commitNumberEdit()
+const (
+	fieldKindFloat = iota + 1
+	fieldKindByte
+	fieldKindHex
+)
+
+func beginFloatEdit(id string, target *float32, lo, hi float32) {
+	if activeFieldID != "" && activeFieldID != id {
+		commitActiveField()
 	}
-	activeNumField = id
-	activeNumTarget = target
-	activeNumMin = lo
-	activeNumMax = hi
-	activeNumOriginal = *target
-	activeNumText = fmtNum(*target)
+	activeFieldID = id
+	activeFieldKind = fieldKindFloat
+	activeFloatTarget = target
+	activeByteTarget = nil
+	activeLightTarget = nil
+	activeFieldMin = lo
+	activeFieldMax = hi
+	activeFloatOrig = *target
+	activeFieldText = fmtNum(*target)
 }
 
-func cancelNumberEdit() {
-	if activeNumTarget != nil {
-		*activeNumTarget = activeNumOriginal
+func beginByteEdit(id string, target *uint8) {
+	if activeFieldID != "" && activeFieldID != id {
+		commitActiveField()
 	}
-	activeNumField = ""
-	activeNumText = ""
-	activeNumTarget = nil
+	activeFieldID = id
+	activeFieldKind = fieldKindByte
+	activeFloatTarget = nil
+	activeByteTarget = target
+	activeLightTarget = nil
+	activeByteOrig = *target
+	activeFieldText = fmtByte(*target)
 }
 
-func commitNumberEdit() {
-	if activeNumTarget != nil {
-		if v, err := strconv.ParseFloat(activeNumText, 32); err == nil {
-			*activeNumTarget = clamp32(float32(v), activeNumMin, activeNumMax)
+func beginHexEdit(id string, light *SceneLight) {
+	if activeFieldID != "" && activeFieldID != id {
+		commitActiveField()
+	}
+	activeFieldID = id
+	activeFieldKind = fieldKindHex
+	activeFloatTarget = nil
+	activeByteTarget = nil
+	activeLightTarget = light
+	activeLightOrig = light.color
+	activeFieldText = fmtHex(light.color)
+}
+
+func cancelActiveField() {
+	switch activeFieldKind {
+	case fieldKindFloat:
+		if activeFloatTarget != nil {
+			*activeFloatTarget = activeFloatOrig
+		}
+	case fieldKindByte:
+		if activeByteTarget != nil {
+			*activeByteTarget = activeByteOrig
+		}
+	case fieldKindHex:
+		if activeLightTarget != nil {
+			activeLightTarget.color = activeLightOrig
 		}
 	}
-	activeNumField = ""
-	activeNumText = ""
-	activeNumTarget = nil
+	activeFieldID = ""
+	activeFieldText = ""
+	activeFieldKind = 0
+	activeFloatTarget = nil
+	activeByteTarget = nil
+	activeLightTarget = nil
 }
 
-func handleActiveNumberInput() {
-	if activeNumField == "" {
+func commitActiveField() {
+	switch activeFieldKind {
+	case fieldKindFloat:
+		if activeFloatTarget != nil {
+			if v, err := strconv.ParseFloat(activeFieldText, 32); err == nil {
+				*activeFloatTarget = clamp32(float32(v), activeFieldMin, activeFieldMax)
+			}
+		}
+	case fieldKindByte:
+		if activeByteTarget != nil {
+			if v, err := strconv.Atoi(activeFieldText); err == nil {
+				if v < 0 {
+					v = 0
+				}
+				if v > 255 {
+					v = 255
+				}
+				*activeByteTarget = uint8(v)
+			}
+		}
+	case fieldKindHex:
+		if activeLightTarget != nil {
+			hex := strings.TrimPrefix(strings.TrimSpace(activeFieldText), "#")
+			if len(hex) == 6 {
+				if v, err := strconv.ParseUint(hex, 16, 32); err == nil {
+					activeLightTarget.color.R = uint8((v >> 16) & 0xFF)
+					activeLightTarget.color.G = uint8((v >> 8) & 0xFF)
+					activeLightTarget.color.B = uint8(v & 0xFF)
+					activeLightTarget.color.A = 255
+				}
+			}
+		}
+	}
+	activeFieldID = ""
+	activeFieldText = ""
+	activeFieldKind = 0
+	activeFloatTarget = nil
+	activeByteTarget = nil
+	activeLightTarget = nil
+}
+
+func handleActiveFieldInput() {
+	if activeFieldID == "" {
 		return
 	}
 	for {
@@ -577,18 +669,27 @@ func handleActiveNumberInput() {
 		if ch == 0 {
 			break
 		}
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' {
-			activeNumText += string(rune(ch))
+		ok := false
+		switch activeFieldKind {
+		case fieldKindFloat:
+			ok = (ch >= '0' && ch <= '9') || ch == '.' || ch == '-'
+		case fieldKindByte:
+			ok = (ch >= '0' && ch <= '9')
+		case fieldKindHex:
+			ok = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || ch == '#'
+		}
+		if ok {
+			activeFieldText += string(rune(ch))
 		}
 	}
-	if rl.IsKeyPressed(rl.KeyBackspace) && len(activeNumText) > 0 {
-		activeNumText = activeNumText[:len(activeNumText)-1]
+	if rl.IsKeyPressed(rl.KeyBackspace) && len(activeFieldText) > 0 {
+		activeFieldText = activeFieldText[:len(activeFieldText)-1]
 	}
 	if rl.IsKeyPressed(rl.KeyEnter) || rl.IsKeyPressed(rl.KeyKpEnter) {
-		commitNumberEdit()
+		commitActiveField()
 	}
 	if rl.IsKeyPressed(rl.KeyEscape) {
-		cancelNumberEdit()
+		cancelActiveField()
 	}
 }
 
@@ -1764,7 +1865,7 @@ func numberField(x, y, w int32, fieldID, text string, target *float32, lo, hi fl
 	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(rowH)}
 	mp := rl.GetMousePosition()
 	hov := rl.CheckCollisionPointRec(mp, r)
-	active := activeNumField == fieldID
+	active := activeFieldID == fieldID
 
 	fill := cPanelDark
 	if hov {
@@ -1781,16 +1882,86 @@ func numberField(x, y, w int32, fieldID, text string, target *float32, lo, hi fl
 
 	display := text
 	if active {
-		display = activeNumText
+		display = activeFieldText
 	}
 	txt(display, x+8, y+(rowH-fontSizeSm)/2, fontSizeSm, cText)
 
 	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
-		beginNumberEdit(fieldID, target, lo, hi)
+		beginFloatEdit(fieldID, target, lo, hi)
 		return true
 	}
 	if active && rl.IsMouseButtonPressed(rl.MouseButtonLeft) && !hov {
-		commitNumberEdit()
+		commitActiveField()
+	}
+	return false
+}
+
+func byteField(x, y, w int32, fieldID string, target *uint8, tint rl.Color) bool {
+	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(rowH)}
+	mp := rl.GetMousePosition()
+	hov := rl.CheckCollisionPointRec(mp, r)
+	active := activeFieldID == fieldID
+
+	fill := cPanelDark
+	if hov {
+		fill = cHover
+	}
+	if active {
+		fill = rl.Color{R: 58, G: 58, B: 58, A: 255}
+	}
+	rl.DrawRectangleRec(r, fill)
+	rl.DrawRectangleLinesEx(r, 1, cBorderLo)
+	if active {
+		rl.DrawRectangleLinesEx(r, 1, tint)
+	}
+
+	display := fmtByte(*target)
+	if active {
+		display = activeFieldText
+	}
+	txt(display, x+8, y+(rowH-fontSizeSm)/2, fontSizeSm, cText)
+
+	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+		beginByteEdit(fieldID, target)
+		return true
+	}
+	if active && rl.IsMouseButtonPressed(rl.MouseButtonLeft) && !hov {
+		commitActiveField()
+	}
+	return false
+}
+
+func hexField(x, y, w int32, fieldID string, light *SceneLight, tint rl.Color) bool {
+	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(rowH)}
+	mp := rl.GetMousePosition()
+	hov := rl.CheckCollisionPointRec(mp, r)
+	active := activeFieldID == fieldID
+
+	fill := cPanelDark
+	if hov {
+		fill = cHover
+	}
+	if active {
+		fill = rl.Color{R: 58, G: 58, B: 58, A: 255}
+	}
+	rl.DrawRectangleRec(r, fill)
+	rl.DrawRectangleLinesEx(r, 1, cBorderLo)
+	if active {
+		rl.DrawRectangleLinesEx(r, 1, tint)
+	}
+
+	display := fmtHex(light.color)
+	if active {
+		display = activeFieldText
+	}
+	txt(display, x+8, y+(rowH-fontSizeSm)/2, fontSizeSm, cText)
+
+	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+		beginHexEdit(fieldID, light)
+		return true
+	}
+	if active && rl.IsMouseButtonPressed(rl.MouseButtonLeft) && !hov {
+		commitActiveField()
 	}
 	return false
 }
@@ -1812,6 +1983,18 @@ func transformVectorRow(x, y, w int32, label string, idBase string, values []*fl
 func transformScalarRow(x, y, w int32, label string, fieldID string, value *float32, lo, hi float32, tint rl.Color) int32 {
 	txt(label, x, y+(rowH-fontSizeSm)/2, fontSizeSm, cTextDim)
 	numberField(x+72, y, w-72, fieldID, fmtNum(*value), value, lo, hi, tint)
+	return rowH + 10
+}
+
+func lightColorRow(x, y, w int32, light *SceneLight) int32 {
+	txt("Color", x, y+(rowH-fontSizeSm)/2, fontSizeSm, cTextDim)
+	startX := x + 72
+	chW := int32(44)
+	byteField(startX, y, chW, fmt.Sprintf("light.%d.color.r", light.id), &light.color.R, cAxisX)
+	byteField(startX+chW+4, y, chW, fmt.Sprintf("light.%d.color.g", light.id), &light.color.G, cAxisY)
+	byteField(startX+(chW+4)*2, y, chW, fmt.Sprintf("light.%d.color.b", light.id), &light.color.B, cAxisZ)
+	hexField(startX+(chW+4)*3, y, w-72-(chW+4)*3, fmt.Sprintf("light.%d.color.hex", light.id), light, cAccent)
+	light.color.A = 255
 	return rowH + 10
 }
 
@@ -2489,19 +2672,7 @@ func drawRightPanel(sw, sh int32) {
 			y += fontSizeSm + 20
 			slider(px+pad, y, slw, "Range", &selLight.rangeDist, 0.5, 20)
 			y += fontSizeSm + 20
-			rv := float32(selLight.color.R) / 255.0
-			gv := float32(selLight.color.G) / 255.0
-			bv := float32(selLight.color.B) / 255.0
-			slider(px+pad, y, slw, "Color R", &rv, 0, 1)
-			selLight.color.R = uint8(clamp32(rv, 0, 1) * 255)
-			y += fontSizeSm + 20
-			slider(px+pad, y, slw, "Color G", &gv, 0, 1)
-			selLight.color.G = uint8(clamp32(gv, 0, 1) * 255)
-			y += fontSizeSm + 20
-			slider(px+pad, y, slw, "Color B", &bv, 0, 1)
-			selLight.color.B = uint8(clamp32(bv, 0, 1) * 255)
-			selLight.color.A = 255
-			y += fontSizeSm + 20
+			y += lightColorRow(px+pad, y, slw, selLight)
 		}
 	}
 	rl.DrawLine(px, y, px+pw, y, cBorderLo)
@@ -2767,7 +2938,7 @@ func drawBottomBar(sw, sh int32) {
 // ── Input ─────────────────────────────────────────────────────
 func handleInput() {
 	ctrl := rl.IsKeyDown(rl.KeyLeftControl) || rl.IsKeyDown(rl.KeyRightControl)
-	handleActiveNumberInput()
+	handleActiveFieldInput()
 
 	// Escape: close render output / cancel nav
 	if rl.IsKeyPressed(rl.KeyEscape) {
