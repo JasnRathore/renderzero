@@ -35,6 +35,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -447,6 +448,15 @@ var (
 	gFontXL     rl.Font
 )
 
+var (
+	activeNumField    string
+	activeNumText     string
+	activeNumTarget   *float32
+	activeNumMin      float32
+	activeNumMax      float32
+	activeNumOriginal float32
+)
+
 func loadFontAt(path string, size int32) (rl.Font, bool) {
 	f := rl.LoadFontEx(path, size, nil, 0)
 	if f.Texture.ID != 0 {
@@ -503,6 +513,16 @@ func txtC(s string, cx, y, sz int32, c rl.Color) {
 	txt(s, cx-measure(s, sz)/2, y, sz, c)
 }
 
+func fmtNum(v float32) string {
+	s := strconv.FormatFloat(float64(v), 'f', 3, 32)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-0" {
+		return "0"
+	}
+	return s
+}
+
 func measure(s string, sz int32) int32 {
 	if gFontLoaded {
 		return int32(rl.MeasureTextEx(fontFor(sz), s, float32(sz), 1.0).X)
@@ -514,6 +534,62 @@ func measure(s string, sz int32) int32 {
 func setStatus(f string, a ...any) {
 	ui.statusMsg = fmt.Sprintf(f, a...)
 	ui.statusTimer = 4.0
+}
+
+func beginNumberEdit(id string, target *float32, lo, hi float32) {
+	if activeNumField != "" && activeNumField != id {
+		commitNumberEdit()
+	}
+	activeNumField = id
+	activeNumTarget = target
+	activeNumMin = lo
+	activeNumMax = hi
+	activeNumOriginal = *target
+	activeNumText = fmtNum(*target)
+}
+
+func cancelNumberEdit() {
+	if activeNumTarget != nil {
+		*activeNumTarget = activeNumOriginal
+	}
+	activeNumField = ""
+	activeNumText = ""
+	activeNumTarget = nil
+}
+
+func commitNumberEdit() {
+	if activeNumTarget != nil {
+		if v, err := strconv.ParseFloat(activeNumText, 32); err == nil {
+			*activeNumTarget = clamp32(float32(v), activeNumMin, activeNumMax)
+		}
+	}
+	activeNumField = ""
+	activeNumText = ""
+	activeNumTarget = nil
+}
+
+func handleActiveNumberInput() {
+	if activeNumField == "" {
+		return
+	}
+	for {
+		ch := rl.GetCharPressed()
+		if ch == 0 {
+			break
+		}
+		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' {
+			activeNumText += string(rune(ch))
+		}
+	}
+	if rl.IsKeyPressed(rl.KeyBackspace) && len(activeNumText) > 0 {
+		activeNumText = activeNumText[:len(activeNumText)-1]
+	}
+	if rl.IsKeyPressed(rl.KeyEnter) || rl.IsKeyPressed(rl.KeyKpEnter) {
+		commitNumberEdit()
+	}
+	if rl.IsKeyPressed(rl.KeyEscape) {
+		cancelNumberEdit()
+	}
 }
 
 func clamp32(v, lo, hi float32) float32 {
@@ -1575,13 +1651,13 @@ func drawGizmo(sw, sh int32) {
 func roundRect(x, y, w, h int32, r float32, c rl.Color) {
 	rl.DrawRectangleRounded(
 		rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)},
-		r, 6, c)
+		0.08, 4, c)
 }
 
 func roundRectLines(x, y, w, h int32, r float32, c rl.Color) {
 	rl.DrawRectangleRoundedLines(
 		rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)},
-		r, 6, c)
+		0.08, 4, c)
 }
 
 func btn(x, y, w, h int32, label string, active bool, accent rl.Color) bool {
@@ -1659,24 +1735,21 @@ func sectionHeader(x, y, w int32, title string, open *bool) {
 	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h)}
 	hov := rl.CheckCollisionPointRec(mp, r)
 
+	bg := cPanelDark
 	if hov {
-		rl.DrawRectangle(x, y, w, h, cHover)
-	} else {
-		rl.DrawRectangle(x, y, w, h, cPanel)
+		bg = cHover
 	}
-	rl.DrawRectangle(x, y+2, 2, h-4, cAccent)
-	rl.DrawRectangle(x+2, y+4, 1, h-8,
-		rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 60})
-	txt(title, x+14, y+(h-fontSize)/2, fontSize, cTextBrt)
+	rl.DrawRectangle(x, y, w, h, bg)
+	rl.DrawLine(x, y, x+w, y, cBorderLo)
+	rl.DrawLine(x, y+h, x+w, y+h, cBorder)
+	txt(strings.ToUpper(title), x+10, y+(h-fontSizeSm)/2, fontSizeSm, cTextBrt)
 
 	arrow := ">"
 	if *open {
 		arrow = "v"
 	}
 	aw := measure(arrow, fontSize)
-	txt(arrow, x+w-aw-10, y+(h-fontSize)/2, fontSize,
-		rl.Color{R: cAccent.R, G: cAccent.G, B: cAccent.B, A: 160})
-	rl.DrawLine(x, y+h, x+w, y+h, cBorderLo)
+	txt(arrow, x+w-aw-10, y+(h-fontSizeSm)/2, fontSizeSm, cTextDim)
 	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
 		*open = !*open
 	}
@@ -1685,6 +1758,61 @@ func sectionHeader(x, y, w int32, title string, open *bool) {
 func labelRow(x, y int32, key, val string, valColor rl.Color) {
 	txt(key, x+pad, y, fontSizeSm, cTextDim)
 	txt(val, x+pad+98, y, fontSizeSm, valColor)
+}
+
+func numberField(x, y, w int32, fieldID, text string, target *float32, lo, hi float32, tint rl.Color) bool {
+	r := rl.Rectangle{X: float32(x), Y: float32(y), Width: float32(w), Height: float32(rowH)}
+	mp := rl.GetMousePosition()
+	hov := rl.CheckCollisionPointRec(mp, r)
+	active := activeNumField == fieldID
+
+	fill := cPanelDark
+	if hov {
+		fill = cHover
+	}
+	if active {
+		fill = rl.Color{R: 58, G: 58, B: 58, A: 255}
+	}
+	rl.DrawRectangleRec(r, fill)
+	rl.DrawRectangleLinesEx(r, 1, cBorderLo)
+	if active {
+		rl.DrawRectangleLinesEx(r, 1, tint)
+	}
+
+	display := text
+	if active {
+		display = activeNumText
+	}
+	txt(display, x+8, y+(rowH-fontSizeSm)/2, fontSizeSm, cText)
+
+	if hov && rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
+		beginNumberEdit(fieldID, target, lo, hi)
+		return true
+	}
+	if active && rl.IsMouseButtonPressed(rl.MouseButtonLeft) && !hov {
+		commitNumberEdit()
+	}
+	return false
+}
+
+func transformVectorRow(x, y, w int32, label string, idBase string, values []*float32, lo, hi float32) int32 {
+	txt(label, x, y+(rowH-fontSizeSm)/2, fontSizeSm, cTextDim)
+	startX := x + 72
+	boxW := (w - 72 - 8) / 3
+	labels := []string{"X", "Y", "Z"}
+	colors := []rl.Color{cAxisX, cAxisY, cAxisZ}
+	for i := 0; i < 3; i++ {
+		lx := startX + int32(i)*(boxW+4)
+		txt(labels[i], lx, y-12, fontSizeSm-2, colors[i])
+		numberField(lx, y, boxW, idBase+"."+labels[i], fmtNum(*values[i]), values[i], lo, hi, colors[i])
+	}
+	return rowH + 16
+}
+
+func transformScalarRow(x, y, w int32, label string, fieldID string, value *float32, lo, hi float32, tint rl.Color) int32 {
+	txt(label, x, y+(rowH-fontSizeSm)/2, fontSizeSm, cTextDim)
+	numberField(x+72, y, w-72, fieldID, fmtNum(*value), value, lo, hi, tint)
+	return rowH + 10
 }
 
 func slider(x, y, w int32, label string, val *float32, lo, hi float32) {
@@ -2239,16 +2367,10 @@ func drawRightPanel(sw, sh int32) {
 		slw := pw - pad*2
 
 		if selObj != nil {
-			slider(px+pad, y, slw, "Position X", &selObj.position.X, -8, 8)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Position Y", &selObj.position.Y, -8, 8)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Position Z", &selObj.position.Z, -8, 8)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Rotation Y", &selObj.rotY, -180, 180)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Scale", &selObj.userScale, 0.05, 5)
-			y += fontSizeSm + 16
+			baseID := fmt.Sprintf("obj.%d", selObj.id)
+			y += transformVectorRow(px+pad, y, slw, "Location", baseID+".loc", []*float32{&selObj.position.X, &selObj.position.Y, &selObj.position.Z}, -9999, 9999)
+			y += transformScalarRow(px+pad, y, slw, "Rotate Y", baseID+".rotY", &selObj.rotY, -360, 360, cAccent)
+			y += transformScalarRow(px+pad, y, slw, "Scale", baseID+".scale", &selObj.userScale, 0.001, 1000, cPurple)
 			if btn(px+pad, y, (slw-4)/2, btnH, "Reset Pos", false, cPurple) {
 				selObj.position = rl.Vector3{}
 				selObj.rotY = 0
@@ -2258,13 +2380,12 @@ func drawRightPanel(sw, sh int32) {
 				camFocusSelected()
 			}
 			y += btnH + 8
-			txt("Arrows move X/Z | PgUp/PgDn move Y", px+pad, y, fontSizeSm, cTextDim)
+			txt("Typed values behave like Blender property fields", px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 4
-			txt("[ ] rotate | - / = scale", px+pad, y, fontSizeSm, cTextDim)
+			txt("Arrows move X/Z | PgUp/PgDn move Y | [ ] rotate | - / = scale", px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 8
 		} else if selCam != nil {
-			slider(px+pad, y, slw, "FoV", &selCam.fovy, 10, 120)
-			y += fontSizeSm + 18
+			y += transformScalarRow(px+pad, y, slw, "FoV", fmt.Sprintf("cam.%d.fov", selCam.id), &selCam.fovy, 10, 120, cGold)
 			labelRow(px, y, "Pos X", fmt.Sprintf("%.2f", selCam.position.X), cAccent)
 			y += fontSizeSm + 6
 			labelRow(px, y, "Pos Y", fmt.Sprintf("%.2f", selCam.position.Y), cAccent)
@@ -2299,16 +2420,13 @@ func drawRightPanel(sw, sh int32) {
 			}
 			y += btnH + 8
 		} else if selLight != nil {
-			slider(px+pad, y, slw, "Position X", &selLight.position.X, -8, 8)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Position Y", &selLight.position.Y, -8, 8)
-			y += fontSizeSm + 18
-			slider(px+pad, y, slw, "Position Z", &selLight.position.Z, -8, 8)
-			y += fontSizeSm + 18
+			y += transformVectorRow(px+pad, y, slw, "Location", fmt.Sprintf("light.%d.loc", selLight.id), []*float32{&selLight.position.X, &selLight.position.Y, &selLight.position.Z}, -9999, 9999)
 			if btn(px+pad, y, pw-pad*2, btnH, "Reset Position", false, cPurple) {
 				selLight.position = rl.Vector3{}
 			}
 			y += btnH + 8
+			txt("Typed values behave like Blender property fields", px+pad, y, fontSizeSm, cTextDim)
+			y += fontSizeSm + 4
 			txt("Arrows move light | PgUp/PgDn move Y", px+pad, y, fontSizeSm, cTextDim)
 			y += fontSizeSm + 8
 		} else {
@@ -2649,6 +2767,7 @@ func drawBottomBar(sw, sh int32) {
 // ── Input ─────────────────────────────────────────────────────
 func handleInput() {
 	ctrl := rl.IsKeyDown(rl.KeyLeftControl) || rl.IsKeyDown(rl.KeyRightControl)
+	handleActiveNumberInput()
 
 	// Escape: close render output / cancel nav
 	if rl.IsKeyPressed(rl.KeyEscape) {
